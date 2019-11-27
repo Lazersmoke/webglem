@@ -1,16 +1,119 @@
 window.onload = main;
 
+// ECS explanation:
+// Typical object is
+//
+// {"render": {...}, "charged": +1, "dynamics": function(dT,objects){...}, "located": [x,y,z]}
+
+snapshotObjects = {}
+
+unlocatedObjects = []
+
 const identityMatrix = [[1,0,0],[0,1,0],[0,0,1]]
+
+function wrapTo(theta,wrapAmount){
+  if(theta > wrapAmount)
+    return theta - wrapAmount
+  if(theta < 0)
+    return theta + wrapAmount
+  return theta
+}
+
+function unitTestAtlas(atlas,pts,epsilon = 0.0000000001){
+  for(let i = 0; i < atlas.length; i++){
+    for(let j = 0; j < atlas.length; j++){ 
+      const transformed = atlas[i].transition[j](atlas[j].transition[i](pts[j]))
+      let diff = []
+      let uhoh = false
+      for(let k = 0; k < transformed.length; k++){
+        diff[k] = transformed[k] - pts[j][k]
+        if(Math.abs(diff[k]) > epsilon){
+          uhoh = true
+        }
+      }
+      if(uhoh){
+        console.log(pts[j] + " (Original in " + j + ")")
+        console.log(transformed + " (After roundtrip to " + i + ")")
+        console.log("\t\t\t\tDifference: " + diff)
+      }
+    }
+  }
+}
+
+function inChartDomain(chart,pt){
+  for(let i = 0; i < pt.length; i++){
+    if(pt[i] > chart.max[i] || pt[i] < chart.min[i]){
+      return false
+    }
+  }
+  return true
+}
+
+function atlasSweep(atlas,pt,chartNum){
+  let out = []
+  for(let i = 0; i < atlas.length; i++){
+    const ptPrime = atlas[chartNum].transition[i](pt)
+    if(inChartDomain(atlas[i],ptPrime)){
+      out[i] = ptPrime
+    }else{
+      out[i] = undefined
+    }
+  }
+  return out
+}
+
+function swapAxisSide([r,t]){
+  return [r,wrapTo(t + Math.PI, 2 * Math.PI)]
+}
+
+// atlas[i].transition[j] is a map from the chart i to the chart j
+
+polarAtlas = [
+  // Chart with theta = 0 on plus x-axis
+  {min: [0,0], max: [Infinity, 2 * Math.PI], transition: [a => a, ([r,t]) => [r,wrapTo(t + Math.PI,2 * Math.PI)],([r,t]) => polarToCart2(r,t)]},
+  // Chart with theta = 0 on minus x-axis
+  {min: [0,0], max: [Infinity, 2 * Math.PI], transition: [([r,t]) => [r,wrapTo(t + Math.PI, 2 * Math.PI)],a => a,([r,t]) => polarToCart2(r,wrapTo(t + Math.PI,2 * Math.PI))]},
+  // Cartesian chart near origin +-1
+  {min: [-1,-1], max: [1,1], transition: [([x,y]) => cartToPolar2(x,y), ([x,y]) => {let [r,t] = cartToPolar2(x,y); return [r,wrapTo(t + Math.PI, 2 * Math.PI)] }, a => a]}
+]
+
+
+// TODO!!! Spherical coordinate charts :D
+/*
+sphereAtlas = [
+  // Chart with slice out of x poles (using +z)
+  {min: [0,0,0], max: [Infinity, Math.PI, 2 * Math.PI], transition: [a => a,([r,t,p]) => [r,changeBasepoint(wrapTwoPi(phi + Math.PI/2)),],([r,t,p]) => polarToCart2(r,wrapTwoPi(t + Math.PI))]},
+  // Chart with slice out of z poles (using -x)
+  {min: [0,0,0], max: [Infinity, Math.PI, 2 * Math.PI], transition: [([r,t]) => [r,wrapTwoPi(t + Math.PI)],a => a,([r,t]) => polarToCart2(r,wrapTwoPi(t + Math.PI))]},
+  // Cartesian chart near origin +-1
+  {min: [-1,-1], max: [1,1], transition: [([x,y]) => cartToPolar2(x,y), ([x,y]) => {let [r,t] = cartToPolar2(x,y); return [r,wrapTwoPi(t + Math.PI)] }, a => a]}
+]
+
+function changeBasepoint(phi){
+  if(phi > Math.PI){
+    return (2 * Math.PI) - phi
+  }
+  return phi
+}
+*/
 
 gameState = {
   viewOrigin: [0,0,0],
   viewRadius: 15,
   viewTheta: Math.PI/2,
   viewPhi: Math.PI,
+  viewIndex: 0,
+  dObject: 0,
   dRad: 0,
   dPhi: 0,
   dTheta: 0,
   gameTime: 0
+}
+
+if(localStorage.getItem("viewRadius")){
+  gameState.viewRadius = parseFloat(localStorage.getItem("viewRadius"))
+  gameState.viewTheta = parseFloat(localStorage.getItem("viewTheta"))
+  gameState.viewPhi = parseFloat(localStorage.getItem("viewPhi"))
 }
 
 document.addEventListener('keydown', evt => {
@@ -21,6 +124,8 @@ document.addEventListener('keydown', evt => {
   if(evt.keyCode == 76){ gameState.dPhi += 0.01 } // L
   if(evt.keyCode == 81){ gameState.dRad -= 0.01 } // Q
   if(evt.keyCode == 90){ gameState.dRad += 0.01 } // Z
+  if(evt.keyCode == 69){ gameState.viewIndex++ } // E
+  if(evt.keyCode == 67){ gameState.viewIndex-- } // C
 }, false);
 document.addEventListener('keyup', evt => {
   if(evt.keyCode == 72){ gameState.dPhi += 0.01 } // H
@@ -35,6 +140,7 @@ function main(){
   const canvas = document.querySelector("#glCanvas")
   const gl = canvas.getContext("webgl")
   if (gl===null) {alert("No WebGL :(")}
+
 
   gl.clearColor(0,0,0,1) // Black Alpha 1
   gl.clear(gl.COLOR_BUFFER_BIT)
@@ -74,25 +180,67 @@ function main(){
     },
   };
 
-  let mobileSphere = bufferSphere(gl,[0,0,0],0.1,8,8,(theta,phi) => [1-Math.sin(theta),0,1,1])
-  mobileSphere.modelPosition=[0,0,1]
+    const tinyElectron = {
+      located: [2,0,2],
+      charged: -0.5,
+      render: bufferSphere(gl,[0,0,0],0.1,8,8,(theta,phi) => [1-Math.sin(theta),0,1,1]),
+      dynamics: electroDynamics,
+      kinematics: {momentum: [0,10,0], mass: 1000}
+    }
+
   let objects = {
-    "zaxis": bufferCurve(gl,t => [0, 0, 50 * t - 25], t => [0, 0, 1 - Math.sin(t * Math.PI), 1], 3), // z axis
-    //bufferCurve(gl,t => [-5 * t, 0, 5 * t * t * t * t], t => [t, 0, 1-t,1], 15), // The curve
-    "centerSphere": bufferSphere(gl,[0,0,0],0.25,8,8,(theta,phi) => [Math.sin(theta),0,1,1]),
-    "mobileSphere": mobileSphere
-    //bufferTwoForm(gl,[0,0,0],basis(0),basis(1),0.5,2,[1,0,0,1]), // xy form
-    //bufferTwoForm(gl,[0,0,0],basis(1),basis(2),0.5,2,[0,1,0,1]), // yz form
-    //bufferTwoForm(gl,[0,0,0],basis(2),basis(0),0.5,2,[0,0,1,1]), // zx form
-    //bufferTwoForm(gl,[1,1,1],[0,1,1],[1,1,0],1,0,[0,1,0,1]) // test form
+    "zaxis": {render: bufferCurve(gl,t => [0, 0, 50 * t - 25], t => [0, 0, 1 - Math.sin(t * Math.PI), 1], 3)}, // z axis
+    "proton": {
+      render: bufferSphere(gl,[0,0,0],0.25,8,8,(theta,phi) => [Math.sin(theta),0,1,1]),
+      located: [0,0,0],
+      kinematics: {momentum: [0,0,0], mass: Infinity},
+      dynamics: electroDynamics,
+      charged: 15
+      },
+    "electron": {
+      render: bufferSphere(gl,[0,0,0],0.1,8,8,(theta,phi) => [1-Math.sin(theta),0,1,1]),
+      located: [15,0,0],
+      kinematics: {momentum: [0,40,0], mass: 1000},
+      dynamics: electroDynamics,
+      charged: -1
+      },
+    "electricField": {dynamics: function(dT,objects){
+      let vecs = []
+      const chargeDist = getChargeDist(objects)
+      const epsilon = 0.1
+
+      //console.time("E field calc")
+      for(const q of chargeDist){
+        if(q.boring){continue}
+        cartDist((x,y,z) => {
+          const eField = calcElectricFieldSigmaCharges(chargeDist,[x,y,z])
+          const fieldStrength = vec3.length(eField)
+
+          if(fieldStrength > epsilon){
+            vecs.push(buildVector([x,y,z],vec3.normalize([],eField),[vec3.length(eField),1,0,vec3.length(eField)]))
+          }
+        }, 1, 5, q.position)
+      }
+      //console.timeEnd("E field calc")
+      if(this.render){ cleanStandard(gl,this.render) }
+      this.render = bufferMany(gl,vecs,gl.LINES)
+    }}
   }
 
-  //for(let radius = 1; radius < 10; radius++)
-    //sphereDist(8,8,(t,p) => objects.push(bufferTwoForm(gl,polarToCart(radius,t,p),thetaDirection(radius,t,p),phiDirection(radius,t,p))))
+  const ionRenderModel = bufferSphere(gl,[0,0,0],0.35,3,3,(theta,phi) => [1,0,0,1])
+
+  cartDist((x,y,z) => {
+    objects["lattice" + x + "" + y + "" + z] = {
+      render: ionRenderModel,
+      located: [x,y,z],
+      charged: 1
+    }
+  },1/15,30,[0,0,0])
 
   // Draw the scene repeatedly
   function render(now) {
     let dT = now - gameState.gameTime
+    document.querySelector("#dT").innerHTML = "" + dT
 
     gameState.viewRadius += dT * gameState.dRad
     gameState.viewRadius = Math.max(0.001,gameState.viewRadius)
@@ -104,22 +252,30 @@ function main(){
     if(gameState.viewPhi < 0)
       gameState.viewPhi += 2 * Math.PI
 
+    localStorage.setItem("viewRadius",gameState.viewRadius)
+    localStorage.setItem("viewTheta",gameState.viewTheta)
+    localStorage.setItem("viewPhi",gameState.viewPhi)
+    
+    let skips = gameState.viewIndex
+    for(let k in objects){
+      if(objects[k].located){
+        skips--
+        if(skips == 0){
+          gameState.viewOrigin = objects[k].located
+          break
+        }
+      }
+    }
+
     gameState.gameTime = now
 
-    vec3.add(objects["mobileSphere"].modelPosition,objects["mobileSphere"].modelPosition,[dT * 0.001,0,0])
+    for(let k in objects){
+      if(objects[k].dynamics){
+        objects[k].dynamics(dT,objects)
+      }
+    }
 
-    let vecs = []
-    const chargeDist = [
-      {position: objects["mobileSphere"].modelPosition, charge: 3},
-      {position: [0,0,0], charge: 1},
-    ]
-    cartDist((x,y,z) => {
-      const eField = calcElectricFieldSigmaCharges(chargeDist,[x,y,z])
-
-      vecs.push(buildVector([x,y,z],vec3.normalize([],eField),[vec3.length(eField),1,0,vec3.length(eField)]))
-    }, 1, 5, [0,0,0])
-    if(objects["electricField"]){ cleanStandard(gl,objects["electricField"]) }
-    objects["electricField"] = bufferMany(gl,vecs,gl.LINES)
+    snapshotObjects = objects
 
     drawScene(gl, programInfo, objects, now);
     requestAnimationFrame(render);
@@ -127,12 +283,44 @@ function main(){
   requestAnimationFrame(render);
 }
 
+function electroDynamics(dT, objects){
+  const eField = calcElectricFieldSigmaCharges(getChargeDist(objects),this.located)
+  let dp = [0,0,0]
+  vec3.scale(dp,eField,this.charged * dT)
+  vec3.add(this.kinematics.momentum,this.kinematics.momentum,dp)
+  const speedLimit = 100
+  if(vec3.length(this.kinematics.momentum) > speedLimit){
+    vec3.scale(this.kinematics.momentum,this.kinematics.momentum,speedLimit / vec3.length(this.kinematics.momentum))
+    console.warn("Limiting speed for " + this)
+  }
+  kinematics.call(this, dT)
+}
+
+function kinematics(dT){
+  let dx = [0,0,0]
+  vec3.scale(dx,this.kinematics.momentum,dT/this.kinematics.mass)
+  vec3.add(this.located,this.located,dx)
+}
+
+function getChargeDist(objects){
+  let charges = []
+  for(let k in objects){
+    let o = objects[k]
+    if(o.located && o.charged){
+      charges.push({position: o.located, charge: o.charged, boring: !o.dynamics})
+    }
+  }
+  return charges
+}
+
 function calcElectricFieldSigmaCharges(charges,pos,k=1){
   let vec = [0,0,0]
   charges.forEach(c => {
     const toPt = vec3.subtract([],pos,c.position)
     const rSq = toPt[0] ** 2 + toPt[1] ** 2 + toPt[2] ** 2
-    vec3.add(vec,vec,vec3.scale([],vec3.normalize([],toPt),k * c.charge/rSq))
+    if(rSq > 0){
+      vec3.add(vec,vec,vec3.scale([],vec3.normalize([],toPt),k * c.charge/rSq))
+    }
   })
   return vec
 }
@@ -164,8 +352,16 @@ function cartDist(fc, density, scale, center, basis = identityMatrix){
   }
 }
 
+function cartToPolar2(x,y){
+  return [Math.sqrt(x*x + y*y), Math.atan2(y,x)]
+}
+
 function cartToPolar(x,y,z){
   return [Math.sqrt(x*x + y*y + z*z), Math.atan2(Math.sqrt(x*x + y*y),z), Math.atan2(y,x)]
+}
+
+function polarToCart2(r,phi){
+  return [r * Math.cos(phi), r * Math.sin(phi)]
 }
 
 function polarToCart(r,theta,phi){
@@ -191,6 +387,9 @@ function basis(k,s=1){
 }
 
 function drawScene(gl, programInfo, objects, now){
+  resize(gl.canvas)
+  gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+
   gl.clearColor(0.5,0.5,0.5,1)
   gl.clearDepth(1)
   gl.enable(gl.DEPTH_TEST)
@@ -203,10 +402,10 @@ function drawScene(gl, programInfo, objects, now){
 
   const projectionMatrix = mat4.create()
 
-  mat4.perspective(projectionMatrix, Math.PI * 0.4, gl.canvas.clientWidth/gl.canvas.clientHeight, 0.1, 100.0)
+  mat4.perspective(projectionMatrix, Math.PI * 0.4, gl.canvas.clientWidth/gl.canvas.clientHeight, 0.1, 1000.0)
 
   const viewMatrix = mat4.create()
-  mat4.lookAt(viewMatrix,polarToCart(gameState.viewRadius,gameState.viewTheta,gameState.viewPhi),gameState.viewOrigin,[0,0,1])
+  mat4.lookAt(viewMatrix,vec3.add([],gameState.viewOrigin,polarToCart(gameState.viewRadius,gameState.viewTheta,gameState.viewPhi)),gameState.viewOrigin,[0,0,1])
 
   gl.useProgram(programInfo.program)
 
@@ -214,25 +413,31 @@ function drawScene(gl, programInfo, objects, now){
   gl.uniformMatrix4fv(programInfo.uniformLocations.projectionMatrix, false, projectionMatrix)
 
   for(let k in objects){
-    let o = objects[k]
+    let ro = objects[k].render
+    if(!ro){continue}
     const modelMatrix = mat4.create()
     mat4.multiply(modelMatrix,viewMatrix,modelMatrix)
-    mat4.translate(modelMatrix,modelMatrix,o.modelPosition)
+    if(objects[k].located){
+      mat4.translate(modelMatrix,modelMatrix,objects[k].located)
+    }else if(!unlocatedObjects.includes(k)){
+      unlocatedObjects.push(k)
+      console.warn("Rendering unlocated object " + k)
+    }
 
     gl.uniformMatrix4fv(programInfo.uniformLocations.modelViewMatrix, false, modelMatrix)
-    gl.bindBuffer(gl.ARRAY_BUFFER, o.position)
+    gl.bindBuffer(gl.ARRAY_BUFFER, ro.position)
     // no normalize, 0 stride, 0 offset
     gl.vertexAttribPointer(programInfo.attribLocations.vertexPosition, 3, gl.FLOAT, false, 0, 0)
     gl.enableVertexAttribArray(programInfo.attribLocations.vertexPosition)
 
-    gl.bindBuffer(gl.ARRAY_BUFFER, o.color)
+    gl.bindBuffer(gl.ARRAY_BUFFER, ro.color)
     // no normalize, 0 stride, 0 offset
     gl.vertexAttribPointer(programInfo.attribLocations.vertexColor, 4, gl.FLOAT, false, 0, 0)
     gl.enableVertexAttribArray(programInfo.attribLocations.vertexColor)
 
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, o.indices);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ro.indices);
     // 0 offset
-    gl.drawElements(o.drawStyle , o.indexCount, gl.UNSIGNED_SHORT, 0);
+    gl.drawElements(ro.drawStyle, ro.indexCount, gl.UNSIGNED_SHORT, 0);
   }
 
 }
@@ -398,9 +603,13 @@ function bufferStandard(gl,o,ds,cnt = o.indices.length){
     color: colorBuffer,
     indices: indexBuffer,
     drawStyle: ds,
-    indexCount: cnt,
-    modelPosition: [0,0,0]
+    indexCount: cnt
   };
+}
+
+// Makes the object p render as q
+function disguiseAs(p,q){
+  p.render = q.render
 }
 
 function bufferSphere(gl,center,radius,segstheta,segsphi,fc) {
@@ -459,4 +668,19 @@ function loadShader(gl, type, source) {
   }
 
   return shader;
+}
+
+function resize(canvas) {
+  // Lookup the size the browser is displaying the canvas.
+  var displayWidth  = canvas.clientWidth;
+  var displayHeight = canvas.clientHeight;
+
+  // Check if the canvas is not the same size.
+  if (canvas.width  !== displayWidth ||
+      canvas.height !== displayHeight) {
+
+    // Make the canvas the same size
+    canvas.width  = displayWidth;
+    canvas.height = displayHeight;
+  }
 }
