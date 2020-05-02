@@ -1,9 +1,18 @@
 window.onload = main;
 
 // ECS explanation:
-// Typical object is
 //
+// Typical object is
 // {"render": {...}, "charged": +1, "dynamics": function(dT,objects){...}, "located": [x,y,z]}
+//
+// Typical viewer state is
+const typicalViewer = {origin: [0,0,0], radius: 15, theta: Math.PI/2, phi: Math.PI}
+
+/*if(localStorage.getItem("viewRadius")){
+  typicalViewer.radius = parseFloat(localStorage.getItem("viewRadius"))
+  typicalViewer.theta = parseFloat(localStorage.getItem("viewTheta"))
+  typicalViewer.phi = parseFloat(localStorage.getItem("viewPhi"))
+}*/
 
 snapshotObjects = {}
 
@@ -11,110 +20,35 @@ unlocatedObjects = []
 
 const identityMatrix = [[1,0,0],[0,1,0],[0,0,1]]
 
-function wrapTo(theta,wrapAmount){
-  if(theta > wrapAmount)
-    return theta - wrapAmount
-  if(theta < 0)
-    return theta + wrapAmount
-  return theta
-}
-
-function unitTestAtlas(atlas,pts,epsilon = 0.0000000001){
-  for(let i = 0; i < atlas.length; i++){
-    for(let j = 0; j < atlas.length; j++){ 
-      const transformed = atlas[i].transition[j](atlas[j].transition[i](pts[j]))
-      let diff = []
-      let uhoh = false
-      for(let k = 0; k < transformed.length; k++){
-        diff[k] = transformed[k] - pts[j][k]
-        if(Math.abs(diff[k]) > epsilon){
-          uhoh = true
-        }
-      }
-      if(uhoh){
-        console.log(pts[j] + " (Original in " + j + ")")
-        console.log(transformed + " (After roundtrip to " + i + ")")
-        console.log("\t\t\t\tDifference: " + diff)
-      }
-    }
-  }
-}
-
-function inChartDomain(chart,pt){
-  for(let i = 0; i < pt.length; i++){
-    if(pt[i] > chart.max[i] || pt[i] < chart.min[i]){
-      return false
-    }
-  }
-  return true
-}
-
-function atlasSweep(atlas,pt,chartNum){
-  let out = []
-  for(let i = 0; i < atlas.length; i++){
-    const ptPrime = atlas[chartNum].transition[i](pt)
-    if(inChartDomain(atlas[i],ptPrime)){
-      out[i] = ptPrime
-    }else{
-      out[i] = undefined
-    }
-  }
-  return out
-}
-
-function swapAxisSide([r,t]){
-  return [r,wrapTo(t + Math.PI, 2 * Math.PI)]
-}
-
-// atlas[i].transition[j] is a map from the chart i to the chart j
-
-polarAtlas = [
-  // Chart with theta = 0 on plus x-axis
-  {min: [0,0], max: [Infinity, 2 * Math.PI], transition: [a => a, ([r,t]) => [r,wrapTo(t + Math.PI,2 * Math.PI)],([r,t]) => polarToCart2(r,t)]},
-  // Chart with theta = 0 on minus x-axis
-  {min: [0,0], max: [Infinity, 2 * Math.PI], transition: [([r,t]) => [r,wrapTo(t + Math.PI, 2 * Math.PI)],a => a,([r,t]) => polarToCart2(r,wrapTo(t + Math.PI,2 * Math.PI))]},
-  // Cartesian chart near origin +-1
-  {min: [-1,-1], max: [1,1], transition: [([x,y]) => cartToPolar2(x,y), ([x,y]) => {let [r,t] = cartToPolar2(x,y); return [r,wrapTo(t + Math.PI, 2 * Math.PI)] }, a => a]}
-]
-
-
-// TODO!!! Spherical coordinate charts :D
-/*
-sphereAtlas = [
-  // Chart with slice out of x poles (using +z)
-  {min: [0,0,0], max: [Infinity, Math.PI, 2 * Math.PI], transition: [a => a,([r,t,p]) => [r,changeBasepoint(wrapTwoPi(phi + Math.PI/2)),],([r,t,p]) => polarToCart2(r,wrapTwoPi(t + Math.PI))]},
-  // Chart with slice out of z poles (using -x)
-  {min: [0,0,0], max: [Infinity, Math.PI, 2 * Math.PI], transition: [([r,t]) => [r,wrapTwoPi(t + Math.PI)],a => a,([r,t]) => polarToCart2(r,wrapTwoPi(t + Math.PI))]},
-  // Cartesian chart near origin +-1
-  {min: [-1,-1], max: [1,1], transition: [([x,y]) => cartToPolar2(x,y), ([x,y]) => {let [r,t] = cartToPolar2(x,y); return [r,wrapTwoPi(t + Math.PI)] }, a => a]}
-]
-
-function changeBasepoint(phi){
-  if(phi > Math.PI){
-    return (2 * Math.PI) - phi
-  }
-  return phi
-}
-*/
-
 gameState = {
-  viewOrigin: [0,0,0],
-  viewRadius: 15,
-  viewTheta: Math.PI/2,
-  viewPhi: Math.PI,
   viewIndex: 0,
+  activeViewer: 0,
   dObject: 0,
   dRad: 0,
   dPhi: 0,
   dTheta: 0,
-  gameTime: 0
+  gameTime: 0,
+  viewports: [
+    {x: 0.0,y: 0.0,w: 0.5,h: 0.5, viewer: Object.assign({},typicalViewer), objects: {}},
+    {x: 0.5,y: 0.0,w: 0.5,h: 0.5, viewer: Object.assign({},typicalViewer), objects: {}},
+    {x: 0.0,y: 0.5,w: 0.5,h: 0.5, viewer: Object.assign({},typicalViewer), objects: {}},
+    {x: 0.5,y: 0.5,w: 0.5,h: 0.5, viewer: Object.assign({},typicalViewer), objects: {}}
+  ]
 }
 
-if(localStorage.getItem("viewRadius")){
-  gameState.viewRadius = parseFloat(localStorage.getItem("viewRadius"))
-  gameState.viewTheta = parseFloat(localStorage.getItem("viewTheta"))
-  gameState.viewPhi = parseFloat(localStorage.getItem("viewPhi"))
+function respondToViewChanges(viewer, dT){
+  viewer.radius += dT * gameState.dRad
+  viewer.radius = Math.max(0.01,viewer.radius)
+  viewer.phi += dT * gameState.dPhi * 0.2
+  viewer.theta += dT * gameState.dTheta * 0.2
+  viewer.theta = Math.min(Math.PI,Math.max(0.001,viewer.theta))
+  if(viewer.phi > 2 * Math.PI)
+    viewer.phi -= 2 * Math.PI
+  if(viewer.phi < 0)
+    viewer.phi += 2 * Math.PI
+  return viewer
 }
+
 
 document.addEventListener('keydown', evt => {
   if(evt.repeat) { return }
@@ -126,6 +60,7 @@ document.addEventListener('keydown', evt => {
   if(evt.keyCode == 90){ gameState.dRad += 0.01 } // Z
   if(evt.keyCode == 69){ gameState.viewIndex++ } // E
   if(evt.keyCode == 67){ gameState.viewIndex-- } // C
+  if(evt.keyCode == 84){ gameState.activeViewer = (gameState.activeViewer + 1) % gameState.viewports.length } // T
 }, false);
 document.addEventListener('keyup', evt => {
   if(evt.keyCode == 72){ gameState.dPhi += 0.01 } // H
@@ -137,7 +72,7 @@ document.addEventListener('keyup', evt => {
 }, false);
 
 function main(){
-  const canvas = document.querySelector("#glCanvas")
+  const canvas = document.getElementById("glCanvas")
   const gl = canvas.getContext("webgl")
   if (gl===null) {alert("No WebGL :(")}
 
@@ -188,8 +123,9 @@ function main(){
       kinematics: {momentum: [0,10,0], mass: 1000}
     }
 
-  let objects = {
-    "zaxis": {render: bufferCurve(gl,t => [0, 0, 50 * t - 25], t => [0, 0, 1 - Math.sin(t * Math.PI), 1], 3)}, // z axis
+  gameState.viewports.forEach(vp => {vp.objects["basis"] = {located: [0,0,0], render: bufferBasis(gl)}})
+  gameState.viewports[0].objects["zaxis"] = {render: bufferCurve(gl,t => [0, 0, 50 * t - 25], t => [0, 0, 1 - Math.sin(t * Math.PI), 1], 3)}
+  Object.assign(gameState.viewports[1].objects,{
     "proton": {
       render: bufferSphere(gl,[0,0,0],0.25,8,8,(theta,phi) => [Math.sin(theta),0,1,1]),
       located: [0,0,0],
@@ -225,12 +161,12 @@ function main(){
       if(this.render){ cleanStandard(gl,this.render) }
       this.render = bufferMany(gl,vecs,gl.LINES)
     }}
-  }
+  })
 
   const ionRenderModel = bufferSphere(gl,[0,0,0],0.35,3,3,(theta,phi) => [1,0,0,1])
 
   cartDist((x,y,z) => {
-    objects["lattice" + x + "" + y + "" + z] = {
+    gameState.viewports[1].objects["lattice" + x + "" + y + "" + z] = {
       render: ionRenderModel,
       located: [x,y,z],
       charged: 1
@@ -241,27 +177,21 @@ function main(){
   function render(now) {
     let dT = now - gameState.gameTime
     document.querySelector("#dT").innerHTML = "" + dT
+    gameState.viewports[gameState.activeViewer].viewer = respondToViewChanges(gameState.viewports[gameState.activeViewer].viewer,dT)
 
-    gameState.viewRadius += dT * gameState.dRad
-    gameState.viewRadius = Math.max(0.001,gameState.viewRadius)
-    gameState.viewPhi += dT * gameState.dPhi * 0.2
-    gameState.viewTheta += dT * gameState.dTheta * 0.2
-    gameState.viewTheta = Math.min(Math.PI,Math.max(0.001,gameState.viewTheta))
-    if(gameState.viewPhi > 2 * Math.PI)
-      gameState.viewPhi -= 2 * Math.PI
-    if(gameState.viewPhi < 0)
-      gameState.viewPhi += 2 * Math.PI
+    const curView = gameState.viewports[gameState.activeViewer].viewer
 
-    localStorage.setItem("viewRadius",gameState.viewRadius)
-    localStorage.setItem("viewTheta",gameState.viewTheta)
-    localStorage.setItem("viewPhi",gameState.viewPhi)
+    localStorage.setItem("viewRadius",curView.radius)
+    localStorage.setItem("viewTheta",curView.theta)
+    localStorage.setItem("viewPhi",curView.phi)
     
     let skips = gameState.viewIndex
-    for(let k in objects){
-      if(objects[k].located){
+    const viewableObjects = gameState.viewports[gameState.activeViewer].objects
+    for(let k in viewableObjects){
+      if(viewableObjects[k].located){
         skips--
         if(skips == 0){
-          gameState.viewOrigin = objects[k].located
+          gameState.viewports[gameState.activeViewer].viewer.origin = viewableObjects[k].located
           break
         }
       }
@@ -269,15 +199,31 @@ function main(){
 
     gameState.gameTime = now
 
+    // Temporarily static while we work on viewports
+    /*
     for(let k in objects){
       if(objects[k].dynamics){
         objects[k].dynamics(dT,objects)
       }
     }
+    */
 
-    snapshotObjects = objects
+    //snapshotObjects = objects
 
-    drawScene(gl, programInfo, objects, now);
+    // Clear once for all viewports
+    gl.clearColor(0.5,0.5,0.5,1)
+    gl.clearDepth(1)
+    gl.enable(gl.DEPTH_TEST)
+    gl.depthFunc(gl.LEQUAL)
+
+    gl.enable(gl.BLEND)
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
+
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
+
+    gameState.viewports.forEach(vp => {
+      drawScene(gl, programInfo, vp);
+    })
     requestAnimationFrame(render);
   }
   requestAnimationFrame(render);
@@ -335,7 +281,11 @@ function sphereDist(segstheta,segsphi,atPoint){
   }
 }
 
-function cartDist(fc, density, scale, center, basis = identityMatrix){
+function cartDist(fc, density, scale, center, basis){
+  if(!basis){
+    basis = []
+    identityMatrix.forEach(v => basis.push(vec3.clone(v)))
+  }
   for(let k = 0; k < 3; k++){
     vec3.normalize(basis[k],basis[k])
     vec3.scale(basis[k],basis[k],1/density)
@@ -386,39 +336,29 @@ function basis(k,s=1){
   return v
 }
 
-function drawScene(gl, programInfo, objects, now){
+function drawScene(gl, programInfo, vp){
   resize(gl.canvas)
-  gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
-
-  gl.clearColor(0.5,0.5,0.5,1)
-  gl.clearDepth(1)
-  gl.enable(gl.DEPTH_TEST)
-  gl.depthFunc(gl.LEQUAL)
-
-  gl.enable(gl.BLEND)
-  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
-
-  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
+  gl.viewport(vp.x * gl.canvas.width, vp.y * gl.canvas.height, vp.w * gl.canvas.width, vp.h * gl.canvas.height);
 
   const projectionMatrix = mat4.create()
 
-  mat4.perspective(projectionMatrix, Math.PI * 0.4, gl.canvas.clientWidth/gl.canvas.clientHeight, 0.1, 1000.0)
+  mat4.perspective(projectionMatrix, Math.PI * 0.4, (vp.w / vp.h) * gl.canvas.clientWidth/gl.canvas.clientHeight, 0.1, 1000.0)
 
   const viewMatrix = mat4.create()
-  mat4.lookAt(viewMatrix,vec3.add([],gameState.viewOrigin,polarToCart(gameState.viewRadius,gameState.viewTheta,gameState.viewPhi)),gameState.viewOrigin,[0,0,1])
+  mat4.lookAt(viewMatrix,vec3.add([],vp.viewer.origin,polarToCart(vp.viewer.radius,vp.viewer.theta,vp.viewer.phi)),vp.viewer.origin,[0,0,1])
 
   gl.useProgram(programInfo.program)
 
   // No transpose
   gl.uniformMatrix4fv(programInfo.uniformLocations.projectionMatrix, false, projectionMatrix)
 
-  for(let k in objects){
-    let ro = objects[k].render
+  for(let k in vp.objects){
+    let ro = vp.objects[k].render
     if(!ro){continue}
     const modelMatrix = mat4.create()
     mat4.multiply(modelMatrix,viewMatrix,modelMatrix)
-    if(objects[k].located){
-      mat4.translate(modelMatrix,modelMatrix,objects[k].located)
+    if(vp.objects[k].located){
+      mat4.translate(modelMatrix,modelMatrix,vp.objects[k].located)
     }else if(!unlocatedObjects.includes(k)){
       unlocatedObjects.push(k)
       console.warn("Rendering unlocated object " + k)
@@ -442,6 +382,7 @@ function drawScene(gl, programInfo, objects, now){
 
 }
 
+// Sample a parametrized curve with color gradient
 function approxCurve(fp,fc,segs){
   let positions = new Float32Array(3*segs)
   let colors = new Float32Array(4*segs)
@@ -459,6 +400,7 @@ function approxCurve(fp,fc,segs){
   return {positions: positions, colors: colors, indices: indices}
 }
 
+// Non-broken javascript modulus operator
 function modul(n,k){
   return ((n % k) + k) % k
 }
@@ -517,57 +459,19 @@ function approxSphere(center,radius,segstheta,segsphi,fc){
   return {positions: positions, colors: colors, indices: indices}
 }
 
+function bufferBasis(gl){
+  let vecs = []
+  identityMatrix.forEach(v => {
+    let c = [v[0],v[1],v[2],1]
+    vecs.push(buildVector([0,0,0],v,c))
+  })
+  return bufferMany(gl,vecs,gl.LINES)
+}
+
+// Returns a colored line starting at the given point and with the given offset
 function buildVector(center,vector,plusColor = [1,1,0,1],minusColor = [0.25,0.25,0.25,1]){
   minusColor[3] = plusColor[3] // Inherit alpha from plusColor
   return {positions: [center,vec3.add([],center,vector)].flat(), colors: [minusColor,plusColor].flat(), indices: [0,1]}
-}
-
-function buildVectorField(gl,fv,density,scale,center){
-  let vecs = []
-  cartDist((x,y,z) => {
-    const v = fv(x,y,z)
-    vecs.push(buildVector([x,y,z],vec3.normalize([],v),[vec3.length(v),1,0,1]))
-  },density,scale,center)
-}
-
-function bufferVector(gl,vec){
-  return bufferStandard(gl,vec,gl.LINES)
-}
-
-function bufferTwoForm(gl,center,baseOne,baseTwo,density = 1, scale = 0,plusColor = [1,1,0,1],minusColor = [0.25,0.25,0.25,1]){
-  vec3.normalize(baseOne,baseOne)
-  vec3.normalize(baseTwo,baseTwo)
-  vec3.scale(baseOne,baseOne,1/density)
-  vec3.scale(baseTwo,baseTwo,1/density)
-
-  let positions = []
-  let colors = []
-  let indices = []
-
-  const reps = density * scale
-
-  const linesOnSide = 2 * reps + 1
-  let along = []
-  vec3.cross(along,baseOne,baseTwo)
-  vec3.normalize(along,along)
-  //vec3.scale(along,along,scale)
-  const length = 0.2
-  for(let i = 0; i < linesOnSide; i++){
-    for(let j = 0; j < linesOnSide; j++){
-      for(let k = 0; k < 3; k++){
-        positions[3 * 2 * (linesOnSide * i + j) + k] = -length * along[k] + center[k] + (i - reps) * baseOne[k] + (j - reps) * baseTwo[k]
-        positions[3 * 2 * (linesOnSide * i + j) + 3 + k] = length * along[k] + center[k] + (i - reps) * baseOne[k] + (j - reps) * baseTwo[k]
-      }
-      for(let k = 0; k < 4; k++){
-        colors[4 * 2 * (linesOnSide * i + j) + k] = minusColor[k]
-        colors[4 * 2 * (linesOnSide * i + j) + 4 + k] = plusColor[k]
-      }
-
-      indices[2 * (linesOnSide * i + j) + 0] = 2 * (linesOnSide * i + j) + 0
-      indices[2 * (linesOnSide * i + j) + 1] = 2 * (linesOnSide * i + j) + 1
-    }
-  }
-  return bufferStandard(gl,{positions: positions, colors: colors, indices: indices},gl.LINES)
 }
 
 function bufferMany(gl,os,ds){
@@ -585,6 +489,7 @@ function cleanStandard(gl,o){
   gl.deleteBuffer(o.indices)
 }
 
+// Makes a render model out of the given positions, colors, indices
 function bufferStandard(gl,o,ds,cnt = o.indices.length){
   const positionBuffer = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
@@ -607,11 +512,6 @@ function bufferStandard(gl,o,ds,cnt = o.indices.length){
   };
 }
 
-// Makes the object p render as q
-function disguiseAs(p,q){
-  p.render = q.render
-}
-
 function bufferSphere(gl,center,radius,segstheta,segsphi,fc) {
   return bufferStandard(gl,approxSphere(center,radius,segstheta,segsphi,fc),gl.TRIANGLES)
 }
@@ -620,15 +520,12 @@ function bufferCurve(gl,fp,fc,segs) {
   return bufferStandard(gl,approxCurve(fp,fc,segs),gl.LINE_STRIP)
 }
 
-//
 // Initialize a shader program, so WebGL knows how to draw our data
-//
 function initShaderProgram(gl, vsSource, fsSource) {
   const vertexShader = loadShader(gl, gl.VERTEX_SHADER, vsSource);
   const fragmentShader = loadShader(gl, gl.FRAGMENT_SHADER, fsSource);
 
   // Create the shader program
-
   const shaderProgram = gl.createProgram();
   gl.attachShader(shaderProgram, vertexShader);
   gl.attachShader(shaderProgram, fragmentShader);
@@ -644,29 +541,16 @@ function initShaderProgram(gl, vsSource, fsSource) {
   return shaderProgram;
 }
 
-//
-// creates a shader of the given type, uploads the source and
-// compiles it.
-//
+// Create a GL shader object from the source
 function loadShader(gl, type, source) {
   const shader = gl.createShader(type);
-
-  // Send the source to the shader object
-
   gl.shaderSource(shader, source);
-
-  // Compile the shader program
-
   gl.compileShader(shader);
-
-  // See if it compiled successfully
-
   if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
     alert('An error occurred compiling the shaders: ' + gl.getShaderInfoLog(shader));
     gl.deleteShader(shader);
     return null;
   }
-
   return shader;
 }
 
@@ -676,9 +560,7 @@ function resize(canvas) {
   var displayHeight = canvas.clientHeight;
 
   // Check if the canvas is not the same size.
-  if (canvas.width  !== displayWidth ||
-      canvas.height !== displayHeight) {
-
+  if (canvas.width  !== displayWidth || canvas.height !== displayHeight) {
     // Make the canvas the same size
     canvas.width  = displayWidth;
     canvas.height = displayHeight;
