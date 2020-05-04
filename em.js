@@ -6,7 +6,7 @@ window.onload = main;
 // {"render": {...}, "charged": +1, "dynamics": function(dT,objects){...}, "located": [x,y,z]}
 //
 // Typical viewer state is
-const typicalViewer = {origin: [0,0,0], radius: 15, theta: Math.PI/2, phi: Math.PI}
+const typicalViewer = {origin: [0,0,0], radius: 15, theta: Math.PI/4, phi: Math.PI * 1.25}
 
 /*if(localStorage.getItem("viewRadius")){
   typicalViewer.radius = parseFloat(localStorage.getItem("viewRadius"))
@@ -20,6 +20,8 @@ unlocatedObjects = []
 
 const identityMatrix = [[1,0,0],[0,1,0],[0,0,1]]
 
+const compressionMatrix = [[0,1,2],[1,2,3],[2,3,0],[3,0,1]]
+
 gameState = {
   viewIndex: 0,
   activeViewer: 0,
@@ -28,6 +30,7 @@ gameState = {
   dPhi: 0,
   dTheta: 0,
   gameTime: 0,
+  objects: {},
   viewports: [
     {x: 0.0,y: 0.0,w: 0.5,h: 0.5, viewer: Object.assign({},typicalViewer), objects: {}},
     {x: 0.5,y: 0.0,w: 0.5,h: 0.5, viewer: Object.assign({},typicalViewer), objects: {}},
@@ -123,6 +126,8 @@ function main(){
       kinematics: {momentum: [0,10,0], mass: 1000}
     }
 
+  gameState.objects["fourvelocity"] = {compress: compressVector, coordinates: [0,0,0,0], data: [15,0,0,0]}
+
   gameState.viewports.forEach(vp => {vp.objects["basis"] = {located: [0,0,0], render: bufferBasis(gl)}})
   gameState.viewports[0].objects["zaxis"] = {render: bufferCurve(gl,t => [0, 0, 50 * t - 25], t => [0, 0, 1 - Math.sin(t * Math.PI), 1], 3)}
   Object.assign(gameState.viewports[1].objects,{
@@ -209,6 +214,18 @@ function main(){
     */
 
     //snapshotObjects = objects
+
+    for(let k in gameState.objects){
+      var v = gameState.objects[k].coordinates
+      for(var j = 0; j < 4; j++){
+        if(gameState.viewports[j].objects[k]){ continue }
+        var w = fourProject(compressionMatrix[j],v)
+        gameState.viewports[j].objects[k] = {
+          render: gameState.objects[k].compress(gl,compressionMatrix[j],gameState.objects[k].data),
+          located: w
+        }
+      }
+    }
 
     // Clear once for all viewports
     gl.clearColor(0.5,0.5,0.5,1)
@@ -518,6 +535,18 @@ function bufferSphere(gl,center,radius,segstheta,segsphi,fc) {
 
 function bufferCurve(gl,fp,fc,segs) {
   return bufferStandard(gl,approxCurve(fp,fc,segs),gl.LINE_STRIP)
+}
+
+function fourProject(c,fv){
+  return [fv[c[0]],fv[c[1]],fv[c[2]]]
+}
+
+function compressVector(gl,c,fourVec){
+  var v = fourProject(c,fourVec)
+  if(v == [0,0,0]){
+    return bufferStandard(gl,{positions: [0,0,0], colors: [1,1,0,1], indices: [0]},gl.POINTS)
+  }
+  return bufferStandard(gl,buildVector([0,0,0],v,[1,1,0,1]),gl.LINES)
 }
 
 // Initialize a shader program, so WebGL knows how to draw our data
