@@ -22,6 +22,8 @@ const identityMatrix = [[1,0,0],[0,1,0],[0,0,1]]
 
 const compressionMatrix = [[0,1,2],[1,2,3],[2,3,0],[3,0,1]]
 
+const lorentzLabels = ["t","x","y","z"]
+
 gameState = {
   viewIndex: 0,
   activeViewer: 0,
@@ -75,7 +77,7 @@ document.addEventListener('keyup', evt => {
 }, false);
 
 function main(){
-  const canvas = document.getElementById("glCanvas")
+    const canvas = document.getElementById("glCanvas")
   const gl = canvas.getContext("webgl")
   if (gl===null) {alert("No WebGL :(")}
 
@@ -126,57 +128,10 @@ function main(){
       kinematics: {momentum: [0,10,0], mass: 1000}
     }
 
-  gameState.objects["fourvelocity"] = {compress: compressVector, coordinates: [0,0,0,0], data: [15,0,0,0]}
+  gameState.objects["fourvelocity"] = {compress: compressVector, data: {vector: [15,0,0,0]}}
+
 
   gameState.viewports.forEach(vp => {vp.objects["basis"] = {located: [0,0,0], render: bufferBasis(gl)}})
-  gameState.viewports[0].objects["zaxis"] = {render: bufferCurve(gl,t => [0, 0, 50 * t - 25], t => [0, 0, 1 - Math.sin(t * Math.PI), 1], 3)}
-  Object.assign(gameState.viewports[1].objects,{
-    "proton": {
-      render: bufferSphere(gl,[0,0,0],0.25,8,8,(theta,phi) => [Math.sin(theta),0,1,1]),
-      located: [0,0,0],
-      kinematics: {momentum: [0,0,0], mass: Infinity},
-      dynamics: electroDynamics,
-      charged: 15
-      },
-    "electron": {
-      render: bufferSphere(gl,[0,0,0],0.1,8,8,(theta,phi) => [1-Math.sin(theta),0,1,1]),
-      located: [15,0,0],
-      kinematics: {momentum: [0,40,0], mass: 1000},
-      dynamics: electroDynamics,
-      charged: -1
-      },
-    "electricField": {dynamics: function(dT,objects){
-      let vecs = []
-      const chargeDist = getChargeDist(objects)
-      const epsilon = 0.1
-
-      //console.time("E field calc")
-      for(const q of chargeDist){
-        if(q.boring){continue}
-        cartDist((x,y,z) => {
-          const eField = calcElectricFieldSigmaCharges(chargeDist,[x,y,z])
-          const fieldStrength = vec3.length(eField)
-
-          if(fieldStrength > epsilon){
-            vecs.push(buildVector([x,y,z],vec3.normalize([],eField),[vec3.length(eField),1,0,vec3.length(eField)]))
-          }
-        }, 1, 5, q.position)
-      }
-      //console.timeEnd("E field calc")
-      if(this.render){ cleanStandard(gl,this.render) }
-      this.render = bufferMany(gl,vecs,gl.LINES)
-    }}
-  })
-
-  const ionRenderModel = bufferSphere(gl,[0,0,0],0.35,3,3,(theta,phi) => [1,0,0,1])
-
-  cartDist((x,y,z) => {
-    gameState.viewports[1].objects["lattice" + x + "" + y + "" + z] = {
-      render: ionRenderModel,
-      located: [x,y,z],
-      charged: 1
-    }
-  },1/15,30,[0,0,0])
 
   // Draw the scene repeatedly
   function render(now) {
@@ -215,16 +170,40 @@ function main(){
 
     //snapshotObjects = objects
 
-    for(let k in gameState.objects){
-      var v = gameState.objects[k].coordinates
-      for(var j = 0; j < 4; j++){
-        if(gameState.viewports[j].objects[k]){ continue }
-        var w = fourProject(compressionMatrix[j],v)
-        gameState.viewports[j].objects[k] = {
-          render: gameState.objects[k].compress(gl,compressionMatrix[j],gameState.objects[k].data),
-          located: w
-        }
+    var nowSlow = now * 0.001
+    gameState.objects["fourvelocity"].data.vector = [15,2 * Math.cos(nowSlow),2 * Math.sin(nowSlow),0.5 * Math.cos(nowSlow * 0.5)]
+
+    // Text canvas stuff
+    const textCanvas = document.getElementById("textCanvas")
+    resize(textCanvas)
+    var txtctx = textCanvas.getContext("2d")
+    const textHeight = 48
+    txtctx.font = textHeight + "px Georgia"
+
+    for(var j = 0; j < 4; j++){
+      for(let k in gameState.objects){
+        gameState.viewports[j].objects[k] = gameState.objects[k].compress(gl,compressionMatrix[j],gameState.objects[k].data,gameState.viewports[j].objects[k])
       }
+      txtctx.textBaseline = "top"
+      txtctx.fillStyle = "black"
+      txtctx.fillText("" + j,gameState.viewports[j].x * txtctx.canvas.width + 0.25 * textHeight,gameState.viewports[j].y * txtctx.canvas.height + 0.25 * textHeight)
+      for(var l = 0; l < 3; l++){
+        txtctx.textBaseline = "bottom"
+        const brightness = 180
+        txtctx.fillStyle = "rgb(" + brightness * identityMatrix[l][0] + "," + brightness * identityMatrix[l][1] + "," + brightness * identityMatrix[l][2] + ")"
+        txtctx.fillText(lorentzLabels[compressionMatrix[j][l]],gameState.viewports[j].x * txtctx.canvas.width + l * 1.5 * textHeight + 0.5 * textHeight,(0.5 + gameState.viewports[j].y) * txtctx.canvas.height - 0.5 * textHeight)
+      }
+      txtctx.strokeStyle = txtctx.createLinearGradient(0,0,txtctx.canvas.width,txtctx.canvas.height)
+      txtctx.strokeStyle.addColorStop(0,"#2E3532")
+      txtctx.strokeStyle.addColorStop(0.5,"#89023E")
+      txtctx.strokeStyle.addColorStop(1,"#587B7F")
+      txtctx.lineWidth = 2
+      txtctx.strokeRect(
+        gameState.viewports[j].x * txtctx.canvas.width + txtctx.lineWidth/2,
+        gameState.viewports[j].y * txtctx.canvas.height + txtctx.lineWidth/2,
+        0.5 * txtctx.canvas.width - txtctx.lineWidth,
+        0.5 * txtctx.canvas.height - txtctx.lineWidth
+      )
     }
 
     // Clear once for all viewports
@@ -355,7 +334,7 @@ function basis(k,s=1){
 
 function drawScene(gl, programInfo, vp){
   resize(gl.canvas)
-  gl.viewport(vp.x * gl.canvas.width, vp.y * gl.canvas.height, vp.w * gl.canvas.width, vp.h * gl.canvas.height);
+  gl.viewport(vp.x * gl.canvas.width, (0.5 - vp.y) * gl.canvas.height, vp.w * gl.canvas.width, vp.h * gl.canvas.height);
 
   const projectionMatrix = mat4.create()
 
@@ -373,13 +352,22 @@ function drawScene(gl, programInfo, vp){
     let ro = vp.objects[k].render
     if(!ro){continue}
     const modelMatrix = mat4.create()
-    mat4.multiply(modelMatrix,viewMatrix,modelMatrix)
     if(vp.objects[k].located){
+      if(vp.objects[k].scaled){
+        var s = vp.objects[k].scaled
+        mat4.scale(modelMatrix, modelMatrix, [s,s,s])
+      }
+      if(vp.objects[k].oriented){
+        let quatMat = mat4.create()
+        mat4.fromRotationTranslation(quatMat,vp.objects[k].oriented, [0,0,0])
+        mat4.multiply(modelMatrix, quatMat, modelMatrix)
+      }
       mat4.translate(modelMatrix,modelMatrix,vp.objects[k].located)
     }else if(!unlocatedObjects.includes(k)){
       unlocatedObjects.push(k)
       console.warn("Rendering unlocated object " + k)
     }
+    mat4.multiply(modelMatrix,viewMatrix,modelMatrix)
 
     gl.uniformMatrix4fv(programInfo.uniformLocations.modelViewMatrix, false, modelMatrix)
     gl.bindBuffer(gl.ARRAY_BUFFER, ro.position)
@@ -541,12 +529,19 @@ function fourProject(c,fv){
   return [fv[c[0]],fv[c[1]],fv[c[2]]]
 }
 
-function compressVector(gl,c,fourVec){
-  var v = fourProject(c,fourVec)
+function compressVector(gl,c,fourVec,oldRenderModel){
+  var v = fourProject(c,fourVec.vector)
   if(v == [0,0,0]){
-    return bufferStandard(gl,{positions: [0,0,0], colors: [1,1,0,1], indices: [0]},gl.POINTS)
+    return {render: bufferStandard(gl,{positions: [0,0,0], colors: [1,1,0,1], indices: [0]},gl.POINTS), located: [0,0,0]}
   }
-  return bufferStandard(gl,buildVector([0,0,0],v,[1,1,0,1]),gl.LINES)
+  if(!oldRenderModel || !oldRenderModel.oriented){
+    oldRenderModel = {render: bufferStandard(gl,buildVector([0,0,0],[0,0,1],[1,1,0,1]),gl.LINES), located: [0,0,0]}
+  }
+  oldRenderModel.oriented = quat.create()
+  oldRenderModel.scaled = vec3.length(v)
+  vec3.normalize(v,v)
+  quat.rotationTo(oldRenderModel.oriented,[0,0,1],v)
+  return oldRenderModel
 }
 
 // Initialize a shader program, so WebGL knows how to draw our data
