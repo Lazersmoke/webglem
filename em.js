@@ -32,6 +32,7 @@ gameState = {
   dPhi: 0,
   dTheta: 0,
   gameTime: 0,
+  doShowInstructions: true,
   objects: {},
   viewports: [
     {x: 0.0,y: 0.0,w: 0.5,h: 0.5, viewer: Object.assign({},typicalViewer), objects: {}},
@@ -65,7 +66,9 @@ document.addEventListener('keydown', evt => {
   if(evt.keyCode == 90){ gameState.dRad += 0.01 } // Z
   if(evt.keyCode == 69){ gameState.viewIndex++ } // E
   if(evt.keyCode == 67){ gameState.viewIndex-- } // C
-  if(evt.keyCode == 84){ gameState.activeViewer = (gameState.activeViewer + 1) % gameState.viewports.length } // T
+  if(evt.keyCode == 84){ gameState.activeViewer = modul(gameState.activeViewer + 1, gameState.viewports.length) } // T
+  if(evt.keyCode == 66){ gameState.activeViewer = modul(gameState.activeViewer - 1, gameState.viewports.length) } // B
+  if(evt.keyCode == 27){ gameState.doShowInstructions = !gameState.doShowInstructions } // ESC
 }, false);
 document.addEventListener('keyup', evt => {
   if(evt.keyCode == 72){ gameState.dPhi += 0.01 } // H
@@ -177,8 +180,16 @@ function main(){
     const textCanvas = document.getElementById("textCanvas")
     resize(textCanvas)
     var txtctx = textCanvas.getContext("2d")
+    txtctx.clearRect(0,0,txtctx.canvas.width,txtctx.canvas.height)
     const textHeight = 48
     txtctx.font = textHeight + "px Georgia"
+    const mainGradient = txtctx.createLinearGradient(0,0,txtctx.canvas.width,txtctx.canvas.height)
+    mainGradient.addColorStop(0,"#2E3532")
+    mainGradient.addColorStop(0.5,"#89023E")
+    mainGradient.addColorStop(1,"#587B7F")
+
+
+    txtctx.lineWidth = 2
 
     for(var j = 0; j < 4; j++){
       for(let k in gameState.objects){
@@ -193,17 +204,49 @@ function main(){
         txtctx.fillStyle = "rgb(" + brightness * identityMatrix[l][0] + "," + brightness * identityMatrix[l][1] + "," + brightness * identityMatrix[l][2] + ")"
         txtctx.fillText(lorentzLabels[compressionMatrix[j][l]],gameState.viewports[j].x * txtctx.canvas.width + l * 1.5 * textHeight + 0.5 * textHeight,(0.5 + gameState.viewports[j].y) * txtctx.canvas.height - 0.5 * textHeight)
       }
-      txtctx.strokeStyle = txtctx.createLinearGradient(0,0,txtctx.canvas.width,txtctx.canvas.height)
-      txtctx.strokeStyle.addColorStop(0,"#2E3532")
-      txtctx.strokeStyle.addColorStop(0.5,"#89023E")
-      txtctx.strokeStyle.addColorStop(1,"#587B7F")
       txtctx.lineWidth = 2
+      if(gameState.activeViewer == j){
+        const activeGradient = txtctx.createLinearGradient(
+          gameState.viewports[j].x * txtctx.canvas.width,
+          gameState.viewports[j].y * txtctx.canvas.height + 0.5 * txtctx.canvas.height,
+          gameState.viewports[j].x * txtctx.canvas.width + 0.5 * txtctx.canvas.width,
+          gameState.viewports[j].y * txtctx.canvas.height
+        )
+        activeGradient.addColorStop(0,"#D3D0CB")
+        activeGradient.addColorStop(1,"#E2C044")
+        txtctx.strokeStyle = activeGradient
+      }else{
+        txtctx.strokeStyle = mainGradient
+      }
       txtctx.strokeRect(
         gameState.viewports[j].x * txtctx.canvas.width + txtctx.lineWidth/2,
         gameState.viewports[j].y * txtctx.canvas.height + txtctx.lineWidth/2,
         0.5 * txtctx.canvas.width - txtctx.lineWidth,
         0.5 * txtctx.canvas.height - txtctx.lineWidth
       )
+    }
+
+    if(gameState.doShowInstructions){
+      txtctx.strokeStyle = mainGradient
+      var paddingSize = 50
+      txtctx.lineWidth = 8
+      txtctx.fillStyle = "rgba(0,10,30,0.55)"
+      txtctx.fillRect(paddingSize,paddingSize,txtctx.canvas.width - paddingSize * 2,txtctx.canvas.height - paddingSize * 2)
+      txtctx.strokeRect(paddingSize,paddingSize,txtctx.canvas.width - paddingSize * 2,txtctx.canvas.height - paddingSize * 2)
+      txtctx.textBaseline = "top"
+      txtctx.fillStyle = "#5f6f6f"
+      var textMargin = 20
+      txtctx.fillText("Controls:",paddingSize + textMargin,paddingSize + textMargin)
+      txtctx.fillText("Esc - Show/Hide Controls",paddingSize + textMargin,paddingSize + textMargin + 1.5 * textHeight)
+      txtctx.fillText("HJKL - Rotate view",paddingSize + textMargin,paddingSize + textMargin + 4.5 * textHeight)
+      txtctx.fillText("QZ - Zoom In/Out",paddingSize + textMargin,paddingSize + textMargin + 6.0 * textHeight)
+      txtctx.fillText("TB - Change Viewport",paddingSize + textMargin,paddingSize + textMargin + 7.5 * textHeight)
+      txtctx.fillText("EC - Change Focused Object",paddingSize + textMargin,paddingSize + textMargin + 9.0 * textHeight)
+      txtctx.fillStyle = "#787b4f"
+      txtctx.fillText("The yellow vectors are the projections of a four velocity with spatial part given by:",paddingSize + textMargin,paddingSize + textMargin + 11.5 * textHeight)
+      txtctx.fillText("<2\u00B7cos(\u03BB),2\u00B7sin(\u03BB),0.5\u00B7cos(0.5\u03BB)>",paddingSize + textMargin,paddingSize + textMargin + 13 * textHeight)
+      txtctx.fillText("for various \u03BB in [0,2\u03C0]",paddingSize + textMargin,paddingSize + textMargin + 14.5 * textHeight)
+ 
     }
 
     // Clear once for all viewports
