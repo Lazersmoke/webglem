@@ -44,7 +44,7 @@ gameState = {
 
 function respondToViewChanges(viewer, dT){
   viewer.radius += dT * gameState.dRad
-  viewer.radius = Math.max(0.01,viewer.radius)
+  viewer.radius = Math.max(0.11,viewer.radius)
   viewer.phi += dT * gameState.dPhi * 0.2
   viewer.theta += dT * gameState.dTheta * 0.2
   viewer.theta = Math.min(Math.PI,Math.max(0.001,viewer.theta))
@@ -68,6 +68,7 @@ document.addEventListener('keydown', evt => {
   if(evt.keyCode == 67){ gameState.viewIndex-- } // C
   if(evt.keyCode == 84){ gameState.activeViewer = modul(gameState.activeViewer + 1, gameState.viewports.length) } // T
   if(evt.keyCode == 66){ gameState.activeViewer = modul(gameState.activeViewer - 1, gameState.viewports.length) } // B
+  if(evt.keyCode == 82){ gameState.viewports.forEach((_,i) => Object.assign(gameState.viewports[i].viewer,typicalViewer)) } // R
   if(evt.keyCode == 27){ gameState.doShowInstructions = !gameState.doShowInstructions } // ESC
 }, false);
 document.addEventListener('keyup', evt => {
@@ -94,7 +95,7 @@ function main(){
     attribute vec4 aVertexColor;
     uniform mat4 uModelViewMatrix;
     uniform mat4 uProjectionMatrix;
-    varying lowp vec4 vColor;
+    varying highp vec4 vColor;
     void main(void) {
       gl_Position = uProjectionMatrix * uModelViewMatrix * aVertexPosition;
       vColor = aVertexColor;
@@ -103,7 +104,7 @@ function main(){
 
   // Fragment shader program
   const fsSource = `
-    varying lowp vec4 vColor;
+    varying highp vec4 vColor;
     void main(void) {
       gl_FragColor = vColor;
     }
@@ -132,7 +133,7 @@ function main(){
     }
 
   gameState.objects["fourvelocity"] = {compress: compressVector, data: {vector: [15,0,0,0]}}
-
+  gameState.objects["lightCone"] = {compress: compressMetric, data: [[-1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]}
 
   gameState.viewports.forEach(vp => {vp.objects["basis"] = {located: [0,0,0], render: bufferBasis(gl)}})
 
@@ -174,7 +175,7 @@ function main(){
     //snapshotObjects = objects
 
     var nowSlow = now * 0.001
-    gameState.objects["fourvelocity"].data.vector = [15,2 * Math.cos(nowSlow),2 * Math.sin(nowSlow),0.5 * Math.cos(nowSlow * 0.5)]
+    gameState.objects["fourvelocity"].data.vector = [15,15 * Math.cos(nowSlow),15 * Math.sin(nowSlow),0.5 * Math.cos(nowSlow * 0.5)]
 
     // Text canvas stuff
     const textCanvas = document.getElementById("textCanvas")
@@ -251,7 +252,7 @@ function main(){
 
     // Clear once for all viewports
     gl.clearColor(0.5,0.5,0.5,1)
-    gl.clearDepth(1)
+    //gl.clearDepth(1)
     gl.enable(gl.DEPTH_TEST)
     gl.depthFunc(gl.LEQUAL)
 
@@ -453,6 +454,42 @@ function modul(n,k){
   return ((n % k) + k) % k
 }
 
+function bufferDoubleCone(gl,tip,baseRadius,baseX,baseY,sampsTheta,fc){
+  var forwards = approxCone(tip,baseRadius,baseX,baseY,sampsTheta,fc)
+  var backward = approxCone(tip,baseRadius,baseY,baseX,sampsTheta,fc)
+  return bufferMany(gl,[forwards,backward],gl.TRIANGLES)
+}
+
+function approxCone(tip,baseRadius,baseX,baseY,sampsTheta,fc){
+  // Circle samples, plus the tip point
+  let numPoints = sampsTheta + 1
+  let positions = new Float32Array(3 * numPoints)
+  let colors = new Float32Array(4 * numPoints)
+  let indices = new Uint16Array(3 * sampsTheta)
+  let upwards = [0,0,0]
+  vec3.cross(upwards,baseX,baseY)
+  vec3.normalize(upwards,upwards)
+  positions[0] = tip[0]
+  positions[1] = tip[1]
+  positions[2] = tip[2]
+  colors[3] = 1
+  for(let i=0; i < sampsTheta; i++){
+    const theta = 2 * Math.PI * i/sampsTheta
+    positions[3 * (1 + i) + 0] = baseX[0] * Math.cos(theta) * baseRadius + baseY[0] * Math.sin(theta) * baseRadius + upwards[0] * baseRadius
+    positions[3 * (1 + i) + 1] = baseX[1] * Math.cos(theta) * baseRadius + baseY[1] * Math.sin(theta) * baseRadius + upwards[1] * baseRadius
+    positions[3 * (1 + i) + 2] = baseX[2] * Math.cos(theta) * baseRadius + baseY[2] * Math.sin(theta) * baseRadius + upwards[2] * baseRadius
+
+    for(let k=0; k < 4; k++){
+      colors[4 * (1 + i) + k] = fc(theta)[k]
+    }
+
+    indices[3 * i + 0] = 0
+    indices[3 * i + 1] = 1 + modul(1 + i,sampsTheta)
+    indices[3 * i + 2] = 1 + i
+  }
+  return {positions: positions, colors: colors, indices: indices}
+}
+
 function approxSphere(center,radius,segstheta,segsphi,fc){
   let positions = new Float32Array(3 * (2 + segsphi * (segstheta - 2))) // Top, Bottom, each segsphi has segstheta-2 points
   let colors = new Float32Array(4 * (2 + segsphi * (segstheta - 2)))
@@ -524,11 +561,19 @@ function buildVector(center,vector,plusColor = [1,1,0,1],minusColor = [0.25,0.25
 
 function bufferMany(gl,os,ds){
   let offset = 0
+  var indexCount = 0
+  var positionBuffer = new Float32Array(os.map(o => o.positions.length).reduce((a,b) => a+b))
+  var colorBuffer = new Float32Array(os.map(o => o.colors.length).reduce((a,b) => a+b))
+  var indexBuffer = new Uint16Array(os.map(o => o.indices.length).reduce((a,b) => a+b))
   for(i = 0; i < os.length; i++){
     os[i].indices = os[i].indices.map(k => offset + k)
+    positionBuffer.set(os[i].positions,offset * 3)
+    colorBuffer.set(os[i].colors,offset * 4)
+    indexBuffer.set(os[i].indices,indexCount)
+    indexCount += os[i].indices.length
     offset += os[i].positions.length / 3
   }
-  return bufferStandard(gl,{positions: os.flatMap(o => o.positions), colors: os.flatMap(o => o.colors), indices: os.flatMap(o => o.indices)},ds)
+  return bufferStandard(gl,{positions: positionBuffer, colors: colorBuffer, indices: indexBuffer},ds)
 }
 
 function cleanStandard(gl,o){
@@ -570,6 +615,38 @@ function bufferCurve(gl,fp,fc,segs) {
 
 function fourProject(c,fv){
   return [fv[c[0]],fv[c[1]],fv[c[2]]]
+}
+
+// metric = [[-1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]
+function compressMetric(gl,c,metric,oldRenderModel){
+  if(oldRenderModel && oldRenderModel.located){ return oldRenderModel}
+  var reducedMetric = fourProject(c,metric).map(v => fourProject(c,v))
+  var eigen = math.eigs(reducedMetric)
+  var sgn = eigen.values.filter(lambda => lambda < 0).length
+
+  // Signature (---) or (+++) metric that we can't really show
+  if(sgn == 3 || sgn == 0){
+    //console.log("Got signature (+++) or (---) metric " + metric + " with projection " + reducedMetric)
+    return {render: bufferStandard(gl,{positions: [0,0,0], colors: [0,1,1,1], indices: [0]},gl.POINTS), located: [0,0,0]}
+  }
+  // Weird case
+  if(sgn == 2){
+    console.log("Got signature (--+) metric? " + eigen + " from " + metric)
+    return {render: bufferStandard(gl,{positions: [0,0,0], colors: [0,1,1,1], indices: [0]},gl.POINTS), located: [0,0,0]}
+  }
+  // This metric *looks* lorentzian in this projection
+  if(sgn == 1){
+    // Eigenvalues are sorted, so it really is (-++) and not a permutation of this
+    eigen.vectors.sort((v,w) => {
+      return math.dot(math.multiply(reducedMetric,v),v) - math.dot(math.multiply(reducedMetric,w),w)
+    })
+
+    var scaledX = []
+    vec3.scale(scaledX,eigen.vectors[1],Math.sqrt(-eigen.values[0])/Math.sqrt(eigen.values[1]))
+    var scaledY = []
+    vec3.scale(scaledY,eigen.vectors[2],Math.sqrt(-eigen.values[0])/Math.sqrt(eigen.values[2]))
+    return {render: bufferDoubleCone(gl,[0,0,0],5,scaledX,scaledY,30,x => [0,1,1,1]), located: [0,0,0]}
+  }
 }
 
 function compressVector(gl,c,fourVec,oldRenderModel){
