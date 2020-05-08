@@ -22,7 +22,7 @@ const identityMatrix = [[1,0,0],[0,1,0],[0,0,1]]
 
 const compressionMatrix = [[0,1,2],[1,2,3],[2,3,0],[3,0,1]]
 
-const lorentzLabels = ["t","x","y","z"]
+const lorentzLabels = ["t","r","\u03D5","z"]
 
 gameState = {
   viewIndex: 0,
@@ -32,6 +32,7 @@ gameState = {
   dPhi: 0,
   dTheta: 0,
   gameTime: 0,
+  nowEvent: [0,1,0,0],
   doShowInstructions: true,
   objects: {},
   viewports: [
@@ -69,6 +70,7 @@ document.addEventListener('keydown', evt => {
   if(evt.keyCode == 84){ gameState.activeViewer = modul(gameState.activeViewer + 1, gameState.viewports.length) } // T
   if(evt.keyCode == 66){ gameState.activeViewer = modul(gameState.activeViewer - 1, gameState.viewports.length) } // B
   if(evt.keyCode == 82){ gameState.viewports.forEach((_,i) => Object.assign(gameState.viewports[i].viewer,typicalViewer)) } // R
+  if(evt.keyCode == 73){ gameState.objects["lightCone"].hidden = !gameState.objects["lightCone"].hidden } // I
   if(evt.keyCode == 27){ gameState.doShowInstructions = !gameState.doShowInstructions } // ESC
 }, false);
 document.addEventListener('keyup', evt => {
@@ -132,10 +134,11 @@ function main(){
       kinematics: {momentum: [0,10,0], mass: 1000}
     }
 
-  gameState.objects["fourvelocity"] = {compress: compressVector, data: {vector: [15,0,0,0]}}
-  gameState.objects["lightCone"] = {compress: compressMetric, data: [[-1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]}
+  gameState.objects["fourvelocity"] = {compress: compressVector}
+  gameState.objects["lightCone"] = {compress: compressMetric}
+  gameState.objects["kartoffelSymbols"] = {compress: compressKartoffel}
 
-  gameState.viewports.forEach(vp => {vp.objects["basis"] = {located: [0,0,0], render: bufferBasis(gl)}})
+  gameState.viewports.forEach(vp => {vp.objects["basis"] = {located: [0,0,0], render: bufferBasis(gl), dirty: true}})
 
   // Draw the scene repeatedly
   function render(now) {
@@ -174,8 +177,29 @@ function main(){
 
     //snapshotObjects = objects
 
-    var nowSlow = now * 0.001
-    gameState.objects["fourvelocity"].data.vector = [15,15 * Math.cos(nowSlow),15 * Math.sin(nowSlow),0.5 * Math.cos(nowSlow * 0.5)]
+    // Indexes into our phase space we display
+    var lambda = now * 0.001
+
+    // Set coordinates:
+    // This is an oscillator in r with the given position and velocity; max velocity 0.25c
+    gameState.nowEvent[1] = 0.5 + 0.25 * Math.sin(lambda)
+    var dr = 0.25 * Math.cos(lambda)
+    // Meanwhile, we are just going in a circle at a constant angular speed
+    // g_{\theta\theta}v^\theta v^\theta = r^2 0.2^2 tells us the velocity here is 0.04 r^2 |(r=0.5) is 0.01c
+    gameState.nowEvent[2] = 0.2 * lambda
+    var dtheta = 0.2
+
+    var mass = 1
+    // In the object's rest frame at an event, we should have norm of this is g_{tt} v^t v^t = mass
+    gameState.objects["fourvelocity"].data = [Math.sqrt(1 - dr * dr - dtheta * dtheta),dr,dtheta,0]
+    gameState.objects["fourvelocity"].dirty = true
+
+    var radius = gameState.nowEvent[1]
+    gameState.objects["lightCone"].data = polarMetric(radius)
+    gameState.objects["lightCone"].dirty = true
+
+    gameState.objects["kartoffelSymbols"].data = polarCurvature(radius)
+    gameState.objects["kartoffelSymbols"].dirty = true
 
     // Text canvas stuff
     const textCanvas = document.getElementById("textCanvas")
@@ -194,7 +218,9 @@ function main(){
 
     for(var j = 0; j < 4; j++){
       for(let k in gameState.objects){
+        if(!gameState.objects[k].dirty){ continue }
         gameState.viewports[j].objects[k] = gameState.objects[k].compress(gl,compressionMatrix[j],gameState.objects[k].data,gameState.viewports[j].objects[k])
+        gameState.viewports[j].objects[k].hidden = gameState.objects[k].hidden
       }
       txtctx.textBaseline = "top"
       txtctx.fillStyle = "black"
@@ -204,6 +230,9 @@ function main(){
         const brightness = 180
         txtctx.fillStyle = "rgb(" + brightness * identityMatrix[l][0] + "," + brightness * identityMatrix[l][1] + "," + brightness * identityMatrix[l][2] + ")"
         txtctx.fillText(lorentzLabels[compressionMatrix[j][l]],gameState.viewports[j].x * txtctx.canvas.width + l * 1.5 * textHeight + 0.5 * textHeight,(0.5 + gameState.viewports[j].y) * txtctx.canvas.height - 0.5 * textHeight)
+        txtctx.font = (textHeight/2) + "px Georgia"
+        txtctx.fillText(gameState.nowEvent[compressionMatrix[j][l]].toFixed(2),gameState.viewports[j].x * txtctx.canvas.width + l * 1.5 * textHeight + 0.5 * textHeight,(0.5 + gameState.viewports[j].y) * txtctx.canvas.height - 1.5 * textHeight)
+        txtctx.font = textHeight + "px Georgia"
       }
       txtctx.lineWidth = 2
       if(gameState.activeViewer == j){
@@ -225,6 +254,9 @@ function main(){
         0.5 * txtctx.canvas.width - txtctx.lineWidth,
         0.5 * txtctx.canvas.height - txtctx.lineWidth
       )
+    }
+    for(let k in gameState.objects){
+      gameState.objects[k].dirty = false
     }
 
     if(gameState.doShowInstructions){
@@ -376,13 +408,57 @@ function basis(k,s=1){
   return v
 }
 
+function drawSingleObject(gl, programInfo, viewMatrix, vpObj){
+  let ro = vpObj.render
+  if(!ro || vpObj.hidden){return}
+  const modelMatrix = mat4.create()
+  if(vpObj.located){
+    if(vpObj.scaled){
+      var s = vpObj.scaled
+      mat4.scale(modelMatrix, modelMatrix, [s,s,s])
+    }
+    if(vpObj.oriented){
+      let quatMat = mat4.create()
+      mat4.fromRotationTranslation(quatMat,vpObj.oriented, [0,0,0])
+      mat4.multiply(modelMatrix, quatMat, modelMatrix)
+    }
+    mat4.translate(modelMatrix,modelMatrix,vpObj.located)
+    if(vpObj.arbitrary){
+      const arb = mat4.fromValues(vpObj.arbitrary[0][0],vpObj.arbitrary[1][0],vpObj.arbitrary[2][0],0
+        ,vpObj.arbitrary[0][1],vpObj.arbitrary[1][1],vpObj.arbitrary[2][1],0
+        ,vpObj.arbitrary[0][2],vpObj.arbitrary[1][2],vpObj.arbitrary[2][2],0
+        ,0,0,0,1)
+      mat4.multiply(modelMatrix, modelMatrix, arb)
+    }
+  }else if(!unlocatedObjects.includes(vpObj)){
+    unlocatedObjects.push(vpObj)
+    console.warn("Rendering unlocated object " + vpObj)
+  }
+  mat4.multiply(modelMatrix,viewMatrix,modelMatrix)
+
+  gl.uniformMatrix4fv(programInfo.uniformLocations.modelViewMatrix, false, modelMatrix)
+  gl.bindBuffer(gl.ARRAY_BUFFER, ro.position)
+  // no normalize, 0 stride, 0 offset
+  gl.vertexAttribPointer(programInfo.attribLocations.vertexPosition, 3, gl.FLOAT, false, 0, 0)
+  gl.enableVertexAttribArray(programInfo.attribLocations.vertexPosition)
+
+  gl.bindBuffer(gl.ARRAY_BUFFER, ro.color)
+  // no normalize, 0 stride, 0 offset
+  gl.vertexAttribPointer(programInfo.attribLocations.vertexColor, 4, gl.FLOAT, false, 0, 0)
+  gl.enableVertexAttribArray(programInfo.attribLocations.vertexColor)
+
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ro.indices);
+  // 0 offset
+  gl.drawElements(ro.drawStyle, ro.indexCount, gl.UNSIGNED_SHORT, 0);
+}
+
 function drawScene(gl, programInfo, vp){
   resize(gl.canvas)
   gl.viewport(vp.x * gl.canvas.width, (0.5 - vp.y) * gl.canvas.height, vp.w * gl.canvas.width, vp.h * gl.canvas.height);
 
   const projectionMatrix = mat4.create()
 
-  mat4.perspective(projectionMatrix, Math.PI * 0.4, (vp.w / vp.h) * gl.canvas.clientWidth/gl.canvas.clientHeight, 0.1, 1000.0)
+  mat4.perspective(projectionMatrix, Math.PI * 0.2, (vp.w / vp.h) * gl.canvas.clientWidth/gl.canvas.clientHeight, 0.1, 1000.0)
 
   const viewMatrix = mat4.create()
   mat4.lookAt(viewMatrix,vec3.add([],vp.viewer.origin,polarToCart(vp.viewer.radius,vp.viewer.theta,vp.viewer.phi)),vp.viewer.origin,[0,0,1])
@@ -393,40 +469,11 @@ function drawScene(gl, programInfo, vp){
   gl.uniformMatrix4fv(programInfo.uniformLocations.projectionMatrix, false, projectionMatrix)
 
   for(let k in vp.objects){
-    let ro = vp.objects[k].render
-    if(!ro){continue}
-    const modelMatrix = mat4.create()
-    if(vp.objects[k].located){
-      if(vp.objects[k].scaled){
-        var s = vp.objects[k].scaled
-        mat4.scale(modelMatrix, modelMatrix, [s,s,s])
-      }
-      if(vp.objects[k].oriented){
-        let quatMat = mat4.create()
-        mat4.fromRotationTranslation(quatMat,vp.objects[k].oriented, [0,0,0])
-        mat4.multiply(modelMatrix, quatMat, modelMatrix)
-      }
-      mat4.translate(modelMatrix,modelMatrix,vp.objects[k].located)
-    }else if(!unlocatedObjects.includes(k)){
-      unlocatedObjects.push(k)
-      console.warn("Rendering unlocated object " + k)
+    if(Array.isArray(vp.objects[k])){
+      vp.objects[k].forEach(o => drawSingleObject(gl, programInfo, viewMatrix, o))
+    }else{
+      drawSingleObject(gl, programInfo, viewMatrix, vp.objects[k])
     }
-    mat4.multiply(modelMatrix,viewMatrix,modelMatrix)
-
-    gl.uniformMatrix4fv(programInfo.uniformLocations.modelViewMatrix, false, modelMatrix)
-    gl.bindBuffer(gl.ARRAY_BUFFER, ro.position)
-    // no normalize, 0 stride, 0 offset
-    gl.vertexAttribPointer(programInfo.attribLocations.vertexPosition, 3, gl.FLOAT, false, 0, 0)
-    gl.enableVertexAttribArray(programInfo.attribLocations.vertexPosition)
-
-    gl.bindBuffer(gl.ARRAY_BUFFER, ro.color)
-    // no normalize, 0 stride, 0 offset
-    gl.vertexAttribPointer(programInfo.attribLocations.vertexColor, 4, gl.FLOAT, false, 0, 0)
-    gl.enableVertexAttribArray(programInfo.attribLocations.vertexColor)
-
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ro.indices);
-    // 0 offset
-    gl.drawElements(ro.drawStyle, ro.indexCount, gl.UNSIGNED_SHORT, 0);
   }
 
 }
@@ -544,10 +591,10 @@ function approxSphere(center,radius,segstheta,segsphi,fc){
   return {positions: positions, colors: colors, indices: indices}
 }
 
-function bufferBasis(gl){
+function bufferBasis(gl, deformedBasis = identityMatrix, alphaScale = 1){
   let vecs = []
-  identityMatrix.forEach(v => {
-    let c = [v[0],v[1],v[2],1]
+  deformedBasis.forEach((v,i) => {
+    let c = [identityMatrix[i][0],identityMatrix[i][1],identityMatrix[i][2],alphaScale]
     vecs.push(buildVector([0,0,0],v,c))
   })
   return bufferMany(gl,vecs,gl.LINES)
@@ -584,6 +631,7 @@ function cleanStandard(gl,o){
 
 // Makes a render model out of the given positions, colors, indices
 function bufferStandard(gl,o,ds,cnt = o.indices.length){
+  console.log("Buffering object with index count = " + cnt)
   const positionBuffer = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(o.positions), gl.STATIC_DRAW);
@@ -614,13 +662,65 @@ function bufferCurve(gl,fp,fc,segs) {
 }
 
 function fourProject(c,fv){
-  return [fv[c[0]],fv[c[1]],fv[c[2]]]
+  if(Array.isArray(fv)){
+    return [fourProject(c,fv[c[0]]),fourProject(c,fv[c[1]]),fourProject(c,fv[c[2]])]
+  }
+  return fv
 }
 
-// metric = [[-1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]
+const zeroCurves = [[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0]]
+const emptyCurvature = [zeroCurves,zeroCurves,zeroCurves,zeroCurves]
+
+// t r phi z metric at given radius
+function polarMetric(radius){
+    return [[-1,0,0,0],[0,1,0,0],[0,0,radius * radius,0],[0,0,0,1]]
+}
+function polarCurvature(radius){
+  // t, r, phi, z
+  // With Gamma^phi_{phi r} = 1/r and Gamma^r_{phi phi} = -r and all else zero
+  const a = 1/radius
+  const b = -radius
+  return [
+    zeroCurves // t
+    ,[[0,0,0,0],[0,0,0,0],[0,0,a,0],[0,0,0,0]] // r
+    ,[[0,0,0,0],[0,0,a,0],[0,b,0,0],[0,0,0,0]] // phi
+    ,zeroCurves // z
+    ]
+}
+
+var differentialOffset = 0.2
+// Christoffel symbols introduce curvature, making spheres into potatoes
+function compressKartoffel(gl,c,kartoffelSymbols,oldRenderModel){
+  if(!oldRenderModel || !oldRenderModel[0] || !oldRenderModel[0].render){
+    console.log("Rebuffering kartoffel basis")
+    oldRenderModel = [{},{},{}]
+    oldRenderModel[0].render = bufferBasis(gl,identityMatrix,0.2)
+    oldRenderModel[1].render = bufferBasis(gl,identityMatrix,0.2)
+    oldRenderModel[2].render = bufferBasis(gl,identityMatrix,0.2)
+  }
+
+  var reducedKartoffel = fourProject(c,kartoffelSymbols)
+  // kartoffelSymbols[i][j][k] = Gamma^k_{ij}
+  identityMatrix.forEach((direction,j) => {
+    var scaledDirection = vec3.create()
+    vec3.scale(scaledDirection,direction,differentialOffset)
+    var deformedBasis = [[],[],[]]
+    identityMatrix.forEach((basisVec,i) => {
+      var scaledSymb = vec3.create()
+      vec3.scale(scaledSymb,reducedKartoffel[i][j],differentialOffset)
+      vec3.add(deformedBasis[i],basisVec,scaledSymb)
+    })
+    oldRenderModel[j].located = scaledDirection
+    oldRenderModel[j].arbitrary = deformedBasis
+  })
+  return oldRenderModel
+}
+
+// Show the light cone for a metric
 function compressMetric(gl,c,metric,oldRenderModel){
-  if(oldRenderModel && oldRenderModel.located){ return oldRenderModel}
-  var reducedMetric = fourProject(c,metric).map(v => fourProject(c,v))
+  //if(oldRenderModel && oldRenderModel.located){ return oldRenderModel}
+  if(oldRenderModel && oldRenderModel.render){ cleanStandard(gl,oldRenderModel.render) }
+  var reducedMetric = fourProject(c,metric)
   var eigen = math.eigs(reducedMetric)
   var sgn = eigen.values.filter(lambda => lambda < 0).length
 
@@ -637,20 +737,18 @@ function compressMetric(gl,c,metric,oldRenderModel){
   // This metric *looks* lorentzian in this projection
   if(sgn == 1){
     // Eigenvalues are sorted, so it really is (-++) and not a permutation of this
-    eigen.vectors.sort((v,w) => {
-      return math.dot(math.multiply(reducedMetric,v),v) - math.dot(math.multiply(reducedMetric,w),w)
-    })
+    eigen.vectors = math.transpose(eigen.vectors)
 
     var scaledX = []
     vec3.scale(scaledX,eigen.vectors[1],Math.sqrt(-eigen.values[0])/Math.sqrt(eigen.values[1]))
     var scaledY = []
     vec3.scale(scaledY,eigen.vectors[2],Math.sqrt(-eigen.values[0])/Math.sqrt(eigen.values[2]))
-    return {render: bufferDoubleCone(gl,[0,0,0],5,scaledX,scaledY,30,x => [0,1,1,1]), located: [0,0,0]}
+    return {render: bufferDoubleCone(gl,[0,0,0],2,scaledX,scaledY,15,x => [0,0.45,0.45,1]), located: [0,0,0]}
   }
 }
 
 function compressVector(gl,c,fourVec,oldRenderModel){
-  var v = fourProject(c,fourVec.vector)
+  var v = fourProject(c,fourVec)
   if(v == [0,0,0]){
     return {render: bufferStandard(gl,{positions: [0,0,0], colors: [1,1,0,1], indices: [0]},gl.POINTS), located: [0,0,0]}
   }
