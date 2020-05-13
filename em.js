@@ -20,9 +20,15 @@ unlocatedObjects = []
 
 const identityMatrix = [[1,0,0],[0,1,0],[0,0,1]]
 
-const compressionMatrix = [[0,1,2],[1,2,3],[2,3,0],[3,0,1]]
+const compressionMatrix = [
+   [[1,0,0,0],[0,1,0,0],[0,0,1,0]]
+  ,[[0,1,0,0],[0,0,1,0],[0,0,0,1]]
+  ,[[0,0,1,0],[0,0,0,1],[1,0,0,0]]
+  ,[[0,0,0,1],[1,0,0,0],[0,1,0,0]]]
 
-const lorentzLabels = ["t","r","\u03D5","z"]
+const labelMatrix = [[0,1,2],[1,2,3],[2,3,0],[3,0,1]]
+
+const lorentzLabels = ["t","r","\u03B8","\u03D5"]
 
 gameState = {
   viewIndex: 0,
@@ -100,6 +106,7 @@ function main(){
     varying highp vec4 vColor;
     void main(void) {
       gl_Position = uProjectionMatrix * uModelViewMatrix * aVertexPosition;
+      gl_PointSize = 10.0;
       vColor = aVertexColor;
     }
   `;
@@ -125,14 +132,6 @@ function main(){
       modelViewMatrix: gl.getUniformLocation(shaderProgram, 'uModelViewMatrix'),
     },
   };
-
-    const tinyElectron = {
-      located: [2,0,2],
-      charged: -0.5,
-      render: bufferSphere(gl,[0,0,0],0.1,8,8,(theta,phi) => [1-Math.sin(theta),0,1,1]),
-      dynamics: electroDynamics,
-      kinematics: {momentum: [0,10,0], mass: 1000}
-    }
 
   gameState.objects["fourvelocity"] = {compress: compressVector}
   gameState.objects["lightCone"] = {compress: compressMetric}
@@ -184,22 +183,27 @@ function main(){
     // This is an oscillator in r with the given position and velocity; max velocity 0.25c
     gameState.nowEvent[1] = 0.5 + 0.25 * Math.sin(lambda)
     var dr = 0.25 * Math.cos(lambda)
-    // Meanwhile, we are just going in a circle at a constant angular speed
-    // g_{\theta\theta}v^\theta v^\theta = r^2 0.2^2 tells us the velocity here is 0.04 r^2 |(r=0.5) is 0.01c
-    gameState.nowEvent[2] = 0.2 * lambda
-    var dtheta = 0.2
 
-    var mass = 1
-    // In the object's rest frame at an event, we should have norm of this is g_{tt} v^t v^t = mass
-    gameState.objects["fourvelocity"].data = [Math.sqrt(1 - dr * dr - dtheta * dtheta),dr,dtheta,0]
-    gameState.objects["fourvelocity"].dirty = true
+    // On equator ish
+    gameState.nowEvent[2] = Math.PI / 2 + 0.1 * Math.cos(3 * lambda)
+    var dtheta = -0.1 * 3 * Math.sin(3 * lambda)
+
+    // Meanwhile, we are just going in a circle at a constant angular speed
+    gameState.nowEvent[3] = 0.2 * lambda
+    var dphi = 0.2
 
     var radius = gameState.nowEvent[1]
-    gameState.objects["lightCone"].data = polarMetric(radius)
+    var theta = gameState.nowEvent[2]
+    const theMetric = sphereMetric(radius,theta)
+    // In the object's rest frame at an event, we should have norm of this is g_{tt} v^t v^t = mass
+    gameState.objects["fourvelocity"].data = [Math.sqrt(1 - dr * dr * theMetric[1][1] - dtheta * dtheta * theMetric[2][2] - dphi * dphi * theMetric[3][3]),dr,dtheta,dphi]
+    gameState.objects["fourvelocity"].dirty = true
+
+    gameState.objects["lightCone"].data = theMetric
     gameState.objects["lightCone"].dirty = true
 
-    gameState.objects["kartoffelSymbols"].data = polarCurvature(radius)
-    gameState.objects["kartoffelSymbols"].dirty = true
+    //gameState.objects["kartoffelSymbols"].data = polarCurvature(radius)
+    //gameState.objects["kartoffelSymbols"].dirty = true
 
     // Text canvas stuff
     const textCanvas = document.getElementById("textCanvas")
@@ -219,7 +223,9 @@ function main(){
     for(var j = 0; j < 4; j++){
       for(let k in gameState.objects){
         if(!gameState.objects[k].dirty){ continue }
-        gameState.viewports[j].objects[k] = gameState.objects[k].compress(gl,compressionMatrix[j],gameState.objects[k].data,gameState.viewports[j].objects[k])
+        if(!gameState.objects[k].hidden){
+          gameState.viewports[j].objects[k] = gameState.objects[k].compress(gl,compressionMatrix[j],gameState.objects[k].data,gameState.viewports[j].objects[k])
+        }
         gameState.viewports[j].objects[k].hidden = gameState.objects[k].hidden
       }
       txtctx.textBaseline = "top"
@@ -229,9 +235,9 @@ function main(){
         txtctx.textBaseline = "bottom"
         const brightness = 180
         txtctx.fillStyle = "rgb(" + brightness * identityMatrix[l][0] + "," + brightness * identityMatrix[l][1] + "," + brightness * identityMatrix[l][2] + ")"
-        txtctx.fillText(lorentzLabels[compressionMatrix[j][l]],gameState.viewports[j].x * txtctx.canvas.width + l * 1.5 * textHeight + 0.5 * textHeight,(0.5 + gameState.viewports[j].y) * txtctx.canvas.height - 0.5 * textHeight)
+        txtctx.fillText(lorentzLabels[labelMatrix[j][l]],gameState.viewports[j].x * txtctx.canvas.width + l * 1.5 * textHeight + 0.5 * textHeight,(0.5 + gameState.viewports[j].y) * txtctx.canvas.height - 0.5 * textHeight)
         txtctx.font = (textHeight/2) + "px Georgia"
-        txtctx.fillText(gameState.nowEvent[compressionMatrix[j][l]].toFixed(2),gameState.viewports[j].x * txtctx.canvas.width + l * 1.5 * textHeight + 0.5 * textHeight,(0.5 + gameState.viewports[j].y) * txtctx.canvas.height - 1.5 * textHeight)
+        txtctx.fillText(fourProject(compressionMatrix[j],gameState.nowEvent)[l].toFixed(2),gameState.viewports[j].x * txtctx.canvas.width + l * 1.5 * textHeight + 0.5 * textHeight,(0.5 + gameState.viewports[j].y) * txtctx.canvas.height - 1.5 * textHeight)
         txtctx.font = textHeight + "px Georgia"
       }
       txtctx.lineWidth = 2
@@ -271,6 +277,7 @@ function main(){
       var textMargin = 20
       txtctx.fillText("Controls:",paddingSize + textMargin,paddingSize + textMargin)
       txtctx.fillText("Esc - Show/Hide Controls",paddingSize + textMargin,paddingSize + textMargin + 1.5 * textHeight)
+      txtctx.fillText("I - Show/Hide Light Cones",paddingSize + textMargin,paddingSize + textMargin + 3 * textHeight)
       txtctx.fillText("HJKL - Rotate view",paddingSize + textMargin,paddingSize + textMargin + 4.5 * textHeight)
       txtctx.fillText("QZ - Zoom In/Out",paddingSize + textMargin,paddingSize + textMargin + 6.0 * textHeight)
       txtctx.fillText("TB - Change Viewport",paddingSize + textMargin,paddingSize + textMargin + 7.5 * textHeight)
@@ -301,112 +308,10 @@ function main(){
   requestAnimationFrame(render);
 }
 
-function electroDynamics(dT, objects){
-  const eField = calcElectricFieldSigmaCharges(getChargeDist(objects),this.located)
-  let dp = [0,0,0]
-  vec3.scale(dp,eField,this.charged * dT)
-  vec3.add(this.kinematics.momentum,this.kinematics.momentum,dp)
-  const speedLimit = 100
-  if(vec3.length(this.kinematics.momentum) > speedLimit){
-    vec3.scale(this.kinematics.momentum,this.kinematics.momentum,speedLimit / vec3.length(this.kinematics.momentum))
-    console.warn("Limiting speed for " + this)
-  }
-  kinematics.call(this, dT)
-}
-
-function kinematics(dT){
-  let dx = [0,0,0]
-  vec3.scale(dx,this.kinematics.momentum,dT/this.kinematics.mass)
-  vec3.add(this.located,this.located,dx)
-}
-
-function getChargeDist(objects){
-  let charges = []
-  for(let k in objects){
-    let o = objects[k]
-    if(o.located && o.charged){
-      charges.push({position: o.located, charge: o.charged, boring: !o.dynamics})
-    }
-  }
-  return charges
-}
-
-function calcElectricFieldSigmaCharges(charges,pos,k=1){
-  let vec = [0,0,0]
-  charges.forEach(c => {
-    const toPt = vec3.subtract([],pos,c.position)
-    const rSq = toPt[0] ** 2 + toPt[1] ** 2 + toPt[2] ** 2
-    if(rSq > 0){
-      vec3.add(vec,vec,vec3.scale([],vec3.normalize([],toPt),k * c.charge/rSq))
-    }
-  })
-  return vec
-}
-
-function sphereDist(segstheta,segsphi,atPoint){
-  for(let i=0; i < segsphi; i++){
-    const phi = 2 * Math.PI * i/segsphi
-    for(let j = 0; j < segstheta - 2; j++){ // Skip top and bottom
-      const theta = Math.PI * (j+1)/(segstheta - 1)
-      atPoint(theta,phi)
-    }
-  }
-}
-
-function cartDist(fc, density, scale, center, basis){
-  if(!basis){
-    basis = []
-    identityMatrix.forEach(v => basis.push(vec3.clone(v)))
-  }
-  for(let k = 0; k < 3; k++){
-    vec3.normalize(basis[k],basis[k])
-    vec3.scale(basis[k],basis[k],1/density)
-  }
-  const reps = density * scale
-  const onSide = 2 * reps + 1
-  for(let i=0; i < onSide; i++){
-    for(let j=0; j < onSide; j++){
-      for(let k=0; k < onSide; k++){
-        function extract(h){ return (i - reps) * basis[0][h] + (j-reps) * basis[1][h] + (k-reps) * basis[2][h] }
-        fc(center[0] + extract(0), center[1] + extract(1), center[2] + extract(2))
-      }
-    }
-  }
-}
-
-function cartToPolar2(x,y){
-  return [Math.sqrt(x*x + y*y), Math.atan2(y,x)]
-}
-
-function cartToPolar(x,y,z){
-  return [Math.sqrt(x*x + y*y + z*z), Math.atan2(Math.sqrt(x*x + y*y),z), Math.atan2(y,x)]
-}
-
-function polarToCart2(r,phi){
-  return [r * Math.cos(phi), r * Math.sin(phi)]
-}
-
 function polarToCart(r,theta,phi){
   return [r * Math.cos(phi) * Math.sin(theta), r * Math.sin(phi) * Math.sin(theta), r * Math.cos(theta)]
 }
 
-function radialDirection(theta,phi){
-  return vec3.normalize([],[Math.cos(phi) * Math.sin(theta), Math.sin(phi) * Math.sin(theta), Math.cos(theta)])
-}
-
-function thetaDirection(r,theta,phi){
-  return vec3.normalize([],[r * Math.cos(phi) * Math.cos(theta), r * Math.sin(phi) * Math.cos(theta), -r * Math.sin(theta)])
-}
-
-function phiDirection(r,theta,phi){
-  return vec3.normalize([],[-r * Math.sin(phi) * Math.sin(theta), r * Math.cos(phi) * Math.sin(theta), 0])
-}
-
-function basis(k,s=1){
-  let v = [0,0,0]
-  v[k] = s
-  return v
-}
 
 function drawSingleObject(gl, programInfo, viewMatrix, vpObj){
   let ro = vpObj.render
@@ -623,6 +528,11 @@ function bufferMany(gl,os,ds){
   return bufferStandard(gl,{positions: positionBuffer, colors: colorBuffer, indices: indexBuffer},ds)
 }
 
+function cleanRenderModel(gl,rm){
+  if(rm && rm.render){
+    cleanStandard(gl,rm.render)
+  }
+}
 function cleanStandard(gl,o){
   gl.deleteBuffer(o.position)
   gl.deleteBuffer(o.color)
@@ -661,20 +571,57 @@ function bufferCurve(gl,fp,fc,segs) {
   return bufferStandard(gl,approxCurve(fp,fc,segs),gl.LINE_STRIP)
 }
 
+// Takes a 3x4 matrix (3-array of 4-arrays) and a spacetime tensor, projects the tensor using the matrix
 function fourProject(c,fv){
+  //console.count("fourProject called")
   if(Array.isArray(fv)){
-    return [fourProject(c,fv[c[0]]),fourProject(c,fv[c[1]]),fourProject(c,fv[c[2]])]
+    var x0 = fourProject(c,fv[0])
+    var x1 = fourProject(c,fv[1])
+    var x2 = fourProject(c,fv[2])
+    var x3 = fourProject(c,fv[3])
+
+    var out = [
+       [arbScale(x0,c[0][0]), arbScale(x1,c[0][1]), arbScale(x2,c[0][2]), arbScale(x3,c[0][3])].reduce(arbSum)
+      ,[arbScale(x0,c[1][0]), arbScale(x1,c[1][1]), arbScale(x2,c[1][2]), arbScale(x3,c[1][3])].reduce(arbSum)
+      ,[arbScale(x0,c[2][0]), arbScale(x1,c[2][1]), arbScale(x2,c[2][2]), arbScale(x3,c[2][3])].reduce(arbSum)]
+    return out
   }
   return fv
+}
+
+function arbSum(a,b){
+  if(Array.isArray(a)){
+    var out = []
+    a.forEach((xa,i) => out.push(arbSum(xa, b[i])))
+    return out
+  }
+  return a + b
+}
+
+function arbScale(x,lambda){
+  if(Array.isArray(x)){
+    var out = []
+    x.forEach(n => out.push(arbScale(n,lambda)))
+    return out
+  }
+  return lambda * x
 }
 
 const zeroCurves = [[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0]]
 const emptyCurvature = [zeroCurves,zeroCurves,zeroCurves,zeroCurves]
 
+function diagMetric(t,x,y,z){
+  return [[t,0,0,0],[0,x,0,0],[0,0,y,0],[0,0,0,z]]
+}
+
+function insideOutPolarMetric(radius){
+    return arbScale(polarMetric(radius),-1)
+}
 // t r phi z metric at given radius
 function polarMetric(radius){
-    return [[-1,0,0,0],[0,1,0,0],[0,0,radius * radius,0],[0,0,0,1]]
+    return diagMetric(-1,1,radius * radius,1)
 }
+
 function polarCurvature(radius){
   // t, r, phi, z
   // With Gamma^phi_{phi r} = 1/r and Gamma^r_{phi phi} = -r and all else zero
@@ -686,6 +633,11 @@ function polarCurvature(radius){
     ,[[0,0,0,0],[0,0,a,0],[0,b,0,0],[0,0,0,0]] // phi
     ,zeroCurves // z
     ]
+}
+
+// t r theta phi
+function sphereMetric(radius,theta){
+  return diagMetric(-1,1,radius * radius, radius * radius * Math.sin(theta) * Math.sin(theta))
 }
 
 var differentialOffset = 0.2
@@ -719,31 +671,56 @@ function compressKartoffel(gl,c,kartoffelSymbols,oldRenderModel){
 // Show the light cone for a metric
 function compressMetric(gl,c,metric,oldRenderModel){
   //if(oldRenderModel && oldRenderModel.located){ return oldRenderModel}
-  if(oldRenderModel && oldRenderModel.render){ cleanStandard(gl,oldRenderModel.render) }
-  var reducedMetric = fourProject(c,metric)
-  var eigen = math.eigs(reducedMetric)
-  var sgn = eigen.values.filter(lambda => lambda < 0).length
+  if(!oldRenderModel){ oldRenderModel = {located: [0,0,0], metricStyle: "unknown"} }
+  const reducedMetric = fourProject(c,metric)
+  const eigen = math.eigs(reducedMetric)
+  const sgn = eigen.values.filter(lambda => lambda < 0).length
+
+  const parity = modul(sgn,2) == 1
+  const colorScheme = parity ? [0,0.45,0.45,1] : [0.45,0,0,1]
 
   // Signature (---) or (+++) metric that we can't really show
   if(sgn == 3 || sgn == 0){
     //console.log("Got signature (+++) or (---) metric " + metric + " with projection " + reducedMetric)
-    return {render: bufferStandard(gl,{positions: [0,0,0], colors: [0,1,1,1], indices: [0]},gl.POINTS), located: [0,0,0]}
+    if(oldRenderModel.metricStyle != "point"){
+      
+      oldRenderModel.render = bufferSphere(gl,[0,0,0],0.1,8,8,(theta,phi) => colorScheme)
+      oldRenderModel.metricStyle = "point"
+    }
+    return oldRenderModel
   }
-  // Weird case
-  if(sgn == 2){
-    console.log("Got signature (--+) metric? " + eigen + " from " + metric)
-    return {render: bufferStandard(gl,{positions: [0,0,0], colors: [0,1,1,1], indices: [0]},gl.POINTS), located: [0,0,0]}
-  }
-  // This metric *looks* lorentzian in this projection
-  if(sgn == 1){
+  // This metric *looks* lorentzian (or skew-lorentzian) in this projection
+  if(sgn == 1 || sgn == 2){
     // Eigenvalues are sorted, so it really is (-++) and not a permutation of this
     eigen.vectors = math.transpose(eigen.vectors)
+
+    // Switch (--+) to (+--) to match (-++); the rest of this is invariant against an overall sign
+    if(!parity){
+      eigen.values = eigen.values.reverse().map(x => -x)
+      // You might think this reversal could change the handedness of the cone!
+      // But fear not, for time has no direction according to only a metric :o
+      // We draw both cones regardless
+      eigen.vectors = eigen.vectors.reverse()
+    }
 
     var scaledX = []
     vec3.scale(scaledX,eigen.vectors[1],Math.sqrt(-eigen.values[0])/Math.sqrt(eigen.values[1]))
     var scaledY = []
     vec3.scale(scaledY,eigen.vectors[2],Math.sqrt(-eigen.values[0])/Math.sqrt(eigen.values[2]))
-    return {render: bufferDoubleCone(gl,[0,0,0],2,scaledX,scaledY,15,x => [0,0.45,0.45,1]), located: [0,0,0]}
+    if(oldRenderModel.metricStyle != "doubleCone"){
+      // Buffer new double cone for the occasion
+      cleanRenderModel(gl,oldRenderModel)
+      oldRenderModel.render = bufferDoubleCone(gl,[0,0,0],2,[1,0,0],[0,1,0],15,x => colorScheme)
+      oldRenderModel.metricStyle = "doubleCone"
+    }
+
+    let upwards = [0,0,0]
+    vec3.cross(upwards,scaledX,scaledY)
+    vec3.normalize(upwards,upwards)
+    oldRenderModel.arbitrary = math.transpose([scaledX,scaledY,upwards])
+
+    return oldRenderModel
+    //return {render: bufferDoubleCone(gl,[0,0,0],2,scaledX,scaledY,15,x => [0,0.45,0.45,1]), located: [0,0,0], metricStyle: "doubleCone"}
   }
 }
 
