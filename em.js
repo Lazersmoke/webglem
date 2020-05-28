@@ -1,10 +1,5 @@
 window.onload = main;
 
-// ECS explanation:
-//
-// Typical object is
-// {"render": {...}, "charged": +1, "dynamics": function(dT,objects){...}, "located": [x,y,z]}
-//
 // Typical viewer state is
 const typicalViewer = {origin: [0,0,0], radius: 15, theta: Math.PI/4, phi: Math.PI * 1.25}
 
@@ -20,6 +15,12 @@ unlocatedObjects = []
 
 const identityMatrix = [[1,0,0],[0,1,0],[0,0,1]]
 
+const compressionTensor = {shape: [4,3,4], data: 
+  [1,0,0,0, 0,1,0,0, 0,0,1,0
+  ,0,1,0,0, 0,0,1,0, 0,0,0,1
+  ,0,0,1,0, 0,0,0,1, 1,0,0,0
+  ,0,0,0,1, 1,0,0,0, 0,1,0,0]
+}
 const compressionMatrix = [
    [[1,0,0,0],[0,1,0,0],[0,0,1,0]]
   ,[[0,1,0,0],[0,0,1,0],[0,0,0,1]]
@@ -89,13 +90,8 @@ document.addEventListener('keyup', evt => {
 }, false);
 
 function main(){
-    const canvas = document.getElementById("glCanvas")
-  const gl = canvas.getContext("webgl")
+  const gl = document.getElementById("glCanvas").getContext("webgl")
   if (gl===null) {alert("No WebGL :(")}
-
-
-  gl.clearColor(0,0,0,1) // Black Alpha 1
-  gl.clear(gl.COLOR_BUFFER_BIT)
 
   // Vertex shader program
   const vsSource = `
@@ -165,17 +161,6 @@ function main(){
 
     gameState.gameTime = now
 
-    // Temporarily static while we work on viewports
-    /*
-    for(let k in objects){
-      if(objects[k].dynamics){
-        objects[k].dynamics(dT,objects)
-      }
-    }
-    */
-
-    //snapshotObjects = objects
-
     // Indexes into our phase space we display
     var lambda = now * 0.001
 
@@ -196,7 +181,7 @@ function main(){
     var theta = gameState.nowEvent[2]
     const theMetric = sphereMetric(radius,theta)
     // In the object's rest frame at an event, we should have norm of this is g_{tt} v^t v^t = mass
-    gameState.objects["fourvelocity"].data = [Math.sqrt(1 - dr * dr * theMetric[1][1] - dtheta * dtheta * theMetric[2][2] - dphi * dphi * theMetric[3][3]),dr,dtheta,dphi]
+    gameState.objects["fourvelocity"].data = {shape: [4], data: [Math.sqrt(1 - dr * dr * theMetric[1][1] - dtheta * dtheta * theMetric[2][2] - dphi * dphi * theMetric[3][3]),dr,dtheta,dphi]}
     gameState.objects["fourvelocity"].dirty = true
 
     gameState.objects["lightCone"].data = theMetric
@@ -224,7 +209,7 @@ function main(){
       for(let k in gameState.objects){
         if(!gameState.objects[k].dirty){ continue }
         if(!gameState.objects[k].hidden){
-          gameState.viewports[j].objects[k] = gameState.objects[k].compress(gl,compressionMatrix[j],gameState.objects[k].data,gameState.viewports[j].objects[k])
+          gameState.viewports[j].objects[k] = gameState.objects[k].compress(gl,j,gameState.objects[k].data,gameState.viewports[j].objects[k])
         }
         gameState.viewports[j].objects[k].hidden = gameState.objects[k].hidden
       }
@@ -542,22 +527,16 @@ function cleanStandard(gl,o){
 // Makes a render model out of the given positions, colors, indices
 function bufferStandard(gl,o,ds,cnt = o.indices.length){
   console.log("Buffering object with index count = " + cnt)
-  const positionBuffer = gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(o.positions), gl.STATIC_DRAW);
-
-  const colorBuffer = gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(o.colors), gl.STATIC_DRAW);
-
-  const indexBuffer = gl.createBuffer();
-  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
-  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,new Uint16Array(o.indices), gl.STATIC_DRAW);
-
+  const mkBuffer = (arrayType,arrayData) => {
+    const theBuffer = gl.createBuffer();
+    gl.bindBuffer(arrayType, theBuffer);
+    gl.bufferData(arrayType, arrayData, gl.STATIC_DRAW)
+    return theBuffer
+  }
   return {
-    position: positionBuffer,
-    color: colorBuffer,
-    indices: indexBuffer,
+    position: mkBuffer(gl.ARRAY_BUFFER,new Float32Array(o.positions)),
+    color: mkBuffer(gl.ARRAY_BUFFER,new Float32Array(o.colors)),
+    indices: mkBuffer(gl.ELEMENT_ARRAY_BUFFER,new Uint16Array(o.indices)),
     drawStyle: ds,
     indexCount: cnt
   };
@@ -570,6 +549,59 @@ function bufferSphere(gl,center,radius,segstheta,segsphi,fc) {
 function bufferCurve(gl,fp,fc,segs) {
   return bufferStandard(gl,approxCurve(fp,fc,segs),gl.LINE_STRIP)
 }
+
+function contract(a,b,contractIndexA,contractIndexB){
+  if(a.shape[contractIndexA] != b.shape[contractIndexB]) { console.warn("dimension mismatch!") }
+  const doReshape = (as,bs) => as.slice(0,contractIndexA).concat(as.slice(contractIndexA+1)).concat(bs.slice(0,contractIndexB).concat(bs.slice(contractIndexB+1)))
+  const outShape = doReshape(a.shape,b.shape)
+  //console.log(outShape)
+  const outSize = outShape.reduce((a,b) => a * Math.abs(b))
+  const contractSize = a.shape[contractIndexA]
+  const leftContractStride = shapeValues(a.shape)[contractIndexA]
+  const rightContractStride = shapeValues(b.shape)[contractIndexB]
+  var out = new Float32Array(outSize)
+  for(var pt = 0; pt < outSize; pt++){
+    var ixs = shapedUnIndex(outShape,pt)
+    var ixsL = ixs.slice(0,a.shape.length - 1)
+    var ixsR = ixs.slice(a.shape.length - 1)
+    ixsL.splice(contractIndexA,0,0)
+    ixsR.splice(contractIndexB,0,0)
+    //console.log(ixs)
+    const startIxL = shapedIndex(a.shape,ixsL)
+    const startIxR = shapedIndex(b.shape,ixsR)
+    //console.log("strides")
+    //console.log(ixsL)
+    //console.log(startIxL)
+    //console.log(leftContractStride)
+    //console.log(ixsR)
+    //console.log(startIxR)
+    //console.log(rightContractStride)
+    for(var j = 0; j < contractSize; j++){
+      out[pt] += a.data[startIxL + j * leftContractStride] * b.data[startIxR + j * rightContractStride]
+    }
+  }
+  return {shape: outShape, data: out}
+}
+
+function shapedFourProject(c,shape,v){
+  if(!shape.every(x => Math.abs(x) == 4)){
+    console.warn("shaped four project of non-4d object!")
+  }
+  var out = []
+  return v
+}
+
+/*
+function shapeLoop(shape){
+  const size = shape.reduce((a,b) => a * Math.abs(b))
+  const vals = shapeValues(shape)
+  var out = []
+  for(var i = 0; i < size; i++){
+    out[i] = vals.map(x => modul(i,x))
+  }
+  return out
+}*/
+
 
 // Takes a 3x4 matrix (3-array of 4-arrays) and a spacetime tensor, projects the tensor using the matrix
 function fourProject(c,fv){
@@ -640,6 +672,57 @@ function sphereMetric(radius,theta){
   return diagMetric(-1,1,radius * radius, radius * radius * Math.sin(theta) * Math.sin(theta))
 }
 
+function shapeValues(shape){
+  var out = []
+  for(var i = 0; i < shape.length - 1; i++){
+    out[i] = shape.slice(i+1).reduce((a,b) => a * Math.abs(b))
+  }
+  out[shape.length-1] = 1
+  return out
+}
+
+function shapedIndex(shape, ixs){
+  for(var i = 0; i < shape.length - 1; i++){
+    ixs[i] = ixs[i] * shape.slice(i+1).reduce((a,b) => a * Math.abs(b))
+  }
+  return ixs.reduce((a,b) => a + b)
+}
+
+function shapedUnIndex(shape, ix){
+  const vals = shapeValues(shape)
+  var out = []
+  vals.forEach((v,i) => {
+    out[i] = Math.floor(ix/v)
+    ix = modul(ix,v) 
+  })
+  return out
+}
+
+function contigSubArray(t, prefix){
+  const dropSize = prefix.length
+  const outShape = t.shape.slice(dropSize) 
+  // Pad the prefix up to the length of the shape
+  prefix.length = t.shape.length
+  prefix.fill(0,dropSize)
+  const startIx = shapedIndex(t.shape,prefix)
+  const outSize = outShape.reduce((a,b) => a * Math.abs(b))
+  return {shape: outShape, data: t.data.slice(startIx, startIx + outSize)}
+}
+
+// T^\alpha_{ijk} with vector values:
+// {compressValue: [i,j,k] => data.get(i,j,k,alpha) for alpha in 0 to 2 for the vector components, data: packed array here, shape: [4,-4,-4,-4], valueShape: [0,-4,-4,-4]}
+//
+// Input tensor should have shape [-4,-4,-4,x...] where the -4's are spacetime covariant indexes, and the x... is further compressable by a provided function
+// tensor = {compressValue: (gl,c,value,oldRenderModel) => { ... }, indexCount: q, valueShape: [x...], shape: [...], data: [...]}
+function compressTensor(gl,c,tensor,oldRenderModel){
+  var go = ixCnt => {
+    if(ixCnt == 0){ return }
+    //tensor.compressValue(gl,c,contigSubArray(tensor.shape,tensor.data),oldRenderModel[i])
+    //oldRenderModel
+    //go(ixCnt - 1)
+  }
+}
+
 var differentialOffset = 0.2
 // Christoffel symbols introduce curvature, making spheres into potatoes
 function compressKartoffel(gl,c,kartoffelSymbols,oldRenderModel){
@@ -651,7 +734,7 @@ function compressKartoffel(gl,c,kartoffelSymbols,oldRenderModel){
     oldRenderModel[2].render = bufferBasis(gl,identityMatrix,0.2)
   }
 
-  var reducedKartoffel = fourProject(c,kartoffelSymbols)
+  var reducedKartoffel = fourProject(compressionMatrix[c],kartoffelSymbols)
   // kartoffelSymbols[i][j][k] = Gamma^k_{ij}
   identityMatrix.forEach((direction,j) => {
     var scaledDirection = vec3.create()
@@ -672,7 +755,7 @@ function compressKartoffel(gl,c,kartoffelSymbols,oldRenderModel){
 function compressMetric(gl,c,metric,oldRenderModel){
   //if(oldRenderModel && oldRenderModel.located){ return oldRenderModel}
   if(!oldRenderModel){ oldRenderModel = {located: [0,0,0], metricStyle: "unknown"} }
-  const reducedMetric = fourProject(c,metric)
+  const reducedMetric = fourProject(compressionMatrix[c],metric)
   const eigen = math.eigs(reducedMetric)
   const sgn = eigen.values.filter(lambda => lambda < 0).length
 
@@ -725,7 +808,7 @@ function compressMetric(gl,c,metric,oldRenderModel){
 }
 
 function compressVector(gl,c,fourVec,oldRenderModel){
-  var v = fourProject(c,fourVec)
+  var v = contigSubArray(contract(compressionTensor,fourVec,2,0),[c]).data
   if(v == [0,0,0]){
     return {render: bufferStandard(gl,{positions: [0,0,0], colors: [1,1,0,1], indices: [0]},gl.POINTS), located: [0,0,0]}
   }
