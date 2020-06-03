@@ -133,12 +133,14 @@ function main(){
   gameState.objects["lightCone"] = {compress: compressMetric}
   gameState.objects["kartoffelSymbols"] = {compress: compressKartoffel}
 
+  gameState.objects["vectorSpread"] = {compress: compressTensor}
+
   gameState.viewports.forEach(vp => {vp.objects["basis"] = {located: [0,0,0], render: bufferBasis(gl), dirty: true}})
 
   // Draw the scene repeatedly
   function render(now) {
     let dT = now - gameState.gameTime
-    document.querySelector("#dT").innerHTML = "" + dT
+    //document.querySelector("#dT").innerHTML = "" + dT
     gameState.viewports[gameState.activeViewer].viewer = respondToViewChanges(gameState.viewports[gameState.activeViewer].viewer,dT)
 
     const curView = gameState.viewports[gameState.activeViewer].viewer
@@ -181,14 +183,17 @@ function main(){
     var theta = gameState.nowEvent[2]
     const theMetric = sphereMetric(radius,theta)
     // In the object's rest frame at an event, we should have norm of this is g_{tt} v^t v^t = mass
-    gameState.objects["fourvelocity"].data = {shape: [4], data: [Math.sqrt(1 - dr * dr * theMetric[1][1] - dtheta * dtheta * theMetric[2][2] - dphi * dphi * theMetric[3][3]),dr,dtheta,dphi]}
+    gameState.objects["fourvelocity"].data = {color: [1,1,0,1], vector: {shape: [4], data: [Math.sqrt(1 - dr * dr * tensorGet(theMetric,[1,1]) - dtheta * dtheta * tensorGet(theMetric,[2,2]) - dphi * dphi * tensorGet(theMetric,[3,3])),dr,dtheta,dphi]}}
     gameState.objects["fourvelocity"].dirty = true
 
     gameState.objects["lightCone"].data = theMetric
     gameState.objects["lightCone"].dirty = true
 
-    //gameState.objects["kartoffelSymbols"].data = polarCurvature(radius)
-    //gameState.objects["kartoffelSymbols"].dirty = true
+    gameState.objects["kartoffelSymbols"].data = polarCurvature(radius)
+    gameState.objects["kartoffelSymbols"].dirty = true
+
+    gameState.objects["vectorSpread"].data = {treeIndexCount: 0, tensor: {shape: [4,4], data: [0,1,0,0, 0,0,1,0, 0,0,0,1, 1,0,0,0]}}
+    gameState.objects["vectorSpread"].dirty = true
 
     // Text canvas stuff
     const textCanvas = document.getElementById("textCanvas")
@@ -209,7 +214,7 @@ function main(){
       for(let k in gameState.objects){
         if(!gameState.objects[k].dirty){ continue }
         if(!gameState.objects[k].hidden){
-          gameState.viewports[j].objects[k] = gameState.objects[k].compress(gl,j,gameState.objects[k].data,gameState.viewports[j].objects[k])
+          gameState.viewports[j].objects[k] = gameState.objects[k].compress(gl,contigSubArray(compressionTensor,[j]),gameState.objects[k].data,gameState.viewports[j].objects[k])
         }
         gameState.viewports[j].objects[k].hidden = gameState.objects[k].hidden
       }
@@ -288,7 +293,7 @@ function main(){
     gameState.viewports.forEach(vp => {
       drawScene(gl, programInfo, vp);
     })
-    requestAnimationFrame(render);
+    requestAnimationFrame(render)
   }
   requestAnimationFrame(render);
 }
@@ -309,10 +314,11 @@ function drawSingleObject(gl, programInfo, viewMatrix, vpObj){
     }
     if(vpObj.oriented){
       let quatMat = mat4.create()
-      mat4.fromRotationTranslation(quatMat,vpObj.oriented, [0,0,0])
+      mat4.fromRotationTranslation(quatMat,vpObj.oriented, vpObj.located)
       mat4.multiply(modelMatrix, quatMat, modelMatrix)
+    }else{
+      mat4.translate(modelMatrix,modelMatrix,vpObj.located)
     }
-    mat4.translate(modelMatrix,modelMatrix,vpObj.located)
     if(vpObj.arbitrary){
       const arb = mat4.fromValues(vpObj.arbitrary[0][0],vpObj.arbitrary[1][0],vpObj.arbitrary[2][0],0
         ,vpObj.arbitrary[0][1],vpObj.arbitrary[1][1],vpObj.arbitrary[2][1],0
@@ -555,7 +561,7 @@ function contract(a,b,contractIndexA,contractIndexB){
   const doReshape = (as,bs) => as.slice(0,contractIndexA).concat(as.slice(contractIndexA+1)).concat(bs.slice(0,contractIndexB).concat(bs.slice(contractIndexB+1)))
   const outShape = doReshape(a.shape,b.shape)
   //console.log(outShape)
-  const outSize = outShape.reduce((a,b) => a * Math.abs(b))
+  const outSize = shapeSize(outShape)
   const contractSize = a.shape[contractIndexA]
   const leftContractStride = shapeValues(a.shape)[contractIndexA]
   const rightContractStride = shapeValues(b.shape)[contractIndexB]
@@ -590,18 +596,6 @@ function shapedFourProject(c,shape,v){
   var out = []
   return v
 }
-
-/*
-function shapeLoop(shape){
-  const size = shape.reduce((a,b) => a * Math.abs(b))
-  const vals = shapeValues(shape)
-  var out = []
-  for(var i = 0; i < size; i++){
-    out[i] = vals.map(x => modul(i,x))
-  }
-  return out
-}*/
-
 
 // Takes a 3x4 matrix (3-array of 4-arrays) and a spacetime tensor, projects the tensor using the matrix
 function fourProject(c,fv){
@@ -639,11 +633,8 @@ function arbScale(x,lambda){
   return lambda * x
 }
 
-const zeroCurves = [[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0]]
-const emptyCurvature = [zeroCurves,zeroCurves,zeroCurves,zeroCurves]
-
 function diagMetric(t,x,y,z){
-  return [[t,0,0,0],[0,x,0,0],[0,0,y,0],[0,0,0,z]]
+  return {shape: [4,4], data: [t,0,0,0, 0,x,0,0, 0,0,y,0, 0,0,0,z]}
 }
 
 function insideOutPolarMetric(radius){
@@ -659,12 +650,13 @@ function polarCurvature(radius){
   // With Gamma^phi_{phi r} = 1/r and Gamma^r_{phi phi} = -r and all else zero
   const a = 1/radius
   const b = -radius
-  return [
-    zeroCurves // t
-    ,[[0,0,0,0],[0,0,0,0],[0,0,a,0],[0,0,0,0]] // r
-    ,[[0,0,0,0],[0,0,a,0],[0,b,0,0],[0,0,0,0]] // phi
-    ,zeroCurves // z
+  return {shape: [4,4,4], data: 
+    [0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0 // t
+    ,0,0,0,0, 0,0,0,0, 0,0,a,0, 0,0,0,0 // r
+    ,0,0,0,0, 0,0,a,0, 0,b,0,0, 0,0,0,0 // phi
+    ,0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0 // z
     ]
+  }
 }
 
 // t r theta phi
@@ -672,18 +664,36 @@ function sphereMetric(radius,theta){
   return diagMetric(-1,1,radius * radius, radius * radius * Math.sin(theta) * Math.sin(theta))
 }
 
+function shapeSize(shape){
+  return shape.reduce((a,b) => a * Math.abs(b),1)
+}
+
 function shapeValues(shape){
   var out = []
   for(var i = 0; i < shape.length - 1; i++){
-    out[i] = shape.slice(i+1).reduce((a,b) => a * Math.abs(b))
+    out[i] = shapeSize(shape.slice(i+1))
   }
   out[shape.length-1] = 1
   return out
 }
 
+function nestTensor(t){
+  if(t.shape.length == 1){ return Array.prototype.slice.call(t.data) }
+  const vals = shapeValues(t.shape)
+  var out = []
+  for(var i = 0; i < t.shape[0]; i++){
+    out.push(nestTensor({shape: t.shape.slice(1),data: t.data.slice(i * vals[0],(i + 1) * vals[0])}))
+  }
+  return out
+}
+
+function tensorGet(t,ixs){
+  return t.data[shapedIndex(t.shape,ixs)]
+}
+
 function shapedIndex(shape, ixs){
   for(var i = 0; i < shape.length - 1; i++){
-    ixs[i] = ixs[i] * shape.slice(i+1).reduce((a,b) => a * Math.abs(b))
+    ixs[i] = ixs[i] * shapeSize(shape.slice(i+1))
   }
   return ixs.reduce((a,b) => a + b)
 }
@@ -702,10 +712,12 @@ function contigSubArray(t, prefix){
   const dropSize = prefix.length
   const outShape = t.shape.slice(dropSize) 
   // Pad the prefix up to the length of the shape
-  prefix.length = t.shape.length
-  prefix.fill(0,dropSize)
-  const startIx = shapedIndex(t.shape,prefix)
-  const outSize = outShape.reduce((a,b) => a * Math.abs(b))
+  var prefixCopy = []
+  for(var i = 0; i < t.shape.length; i++){
+    prefixCopy[i] = i < prefix.length ? prefix[i] : 0
+  }
+  const startIx = shapedIndex(t.shape,prefixCopy)
+  const outSize = shapeSize(outShape)
   return {shape: outShape, data: t.data.slice(startIx, startIx + outSize)}
 }
 
@@ -714,13 +726,37 @@ function contigSubArray(t, prefix){
 //
 // Input tensor should have shape [-4,-4,-4,x...] where the -4's are spacetime covariant indexes, and the x... is further compressable by a provided function
 // tensor = {compressValue: (gl,c,value,oldRenderModel) => { ... }, indexCount: q, valueShape: [x...], shape: [...], data: [...]}
-function compressTensor(gl,c,tensor,oldRenderModel){
-  var go = ixCnt => {
-    if(ixCnt == 0){ return }
-    //tensor.compressValue(gl,c,contigSubArray(tensor.shape,tensor.data),oldRenderModel[i])
-    //oldRenderModel
-    //go(ixCnt - 1)
+function compressTensor(gl,c,tensorData,oldRenderModel){
+  var theTensor = tensorData.tensor
+  for(var i = 0; i < tensorData.treeIndexCount; i++){
+    theTensor = contract(c,theTensor,1,i)
   }
+  const numParts = shapeSize(theTensor.shape.slice(0,tensorData.treeIndexCount))
+  if(!oldRenderModel){
+    oldRenderModel = []
+    oldRenderModel.length = numParts
+  }
+  const valueSize = shapeSize(theTensor.shape.slice(tensorData.treeIndexCount))
+  const valueRank = theTensor.shape.length - tensorData.treeIndexCount
+  const buildIt = (t,o) => {
+    if(valueRank == 1){
+      return compressVector(gl,c,{vector: t, color: [0,0.3,0.6,1]},o)
+    }
+    if(valueRank == 2){
+      return compressBasis(gl,c,t,o)
+    }
+  }
+  for(var ptNum = 0; ptNum < numParts; ptNum++){
+    const spot = shapedUnIndex(theTensor.shape.slice(0,tensorData.treeIndexCount),ptNum)
+    oldRenderModel[ptNum] = buildIt(contigSubArray(theTensor,spot), oldRenderModel[ptNum])
+    var offset = [0,0,0]
+    //console.log(spot)
+    spot.forEach(x => {
+      offset[x] = offset[x] + differentialOffset
+    })
+    oldRenderModel[ptNum].located = offset
+  }
+  return oldRenderModel
 }
 
 var differentialOffset = 0.2
@@ -734,7 +770,7 @@ function compressKartoffel(gl,c,kartoffelSymbols,oldRenderModel){
     oldRenderModel[2].render = bufferBasis(gl,identityMatrix,0.2)
   }
 
-  var reducedKartoffel = fourProject(compressionMatrix[c],kartoffelSymbols)
+  var reducedKartoffel = contract(c,contract(c,contract(c,kartoffelSymbols,1,0),1,1),1,2)
   // kartoffelSymbols[i][j][k] = Gamma^k_{ij}
   identityMatrix.forEach((direction,j) => {
     var scaledDirection = vec3.create()
@@ -742,7 +778,7 @@ function compressKartoffel(gl,c,kartoffelSymbols,oldRenderModel){
     var deformedBasis = [[],[],[]]
     identityMatrix.forEach((basisVec,i) => {
       var scaledSymb = vec3.create()
-      vec3.scale(scaledSymb,reducedKartoffel[i][j],differentialOffset)
+      vec3.scale(scaledSymb,contigSubArray(reducedKartoffel,[i,j]).data,differentialOffset)
       vec3.add(deformedBasis[i],basisVec,scaledSymb)
     })
     oldRenderModel[j].located = scaledDirection
@@ -751,12 +787,21 @@ function compressKartoffel(gl,c,kartoffelSymbols,oldRenderModel){
   return oldRenderModel
 }
 
+function compressBasis(gl,c,basis,oldRenderModel){
+  if(!oldRenderModel){
+    oldRenderModel = {render: bufferBasis(gl,identityMatrix,0.5)}
+  }
+  var reducedBasis = contract(c,contract(c,basis,1,0),1,1)
+  oldRenderModel.arbitrary = nestTensor(reducedBasis)
+  return oldRenderModel
+}
+
 // Show the light cone for a metric
 function compressMetric(gl,c,metric,oldRenderModel){
   //if(oldRenderModel && oldRenderModel.located){ return oldRenderModel}
   if(!oldRenderModel){ oldRenderModel = {located: [0,0,0], metricStyle: "unknown"} }
-  const reducedMetric = fourProject(compressionMatrix[c],metric)
-  const eigen = math.eigs(reducedMetric)
+  const reducedMetric = contract(c,contract(c,metric,1,0),1,1)
+  const eigen = math.eigs(nestTensor(reducedMetric))
   const sgn = eigen.values.filter(lambda => lambda < 0).length
 
   const parity = modul(sgn,2) == 1
@@ -808,12 +853,12 @@ function compressMetric(gl,c,metric,oldRenderModel){
 }
 
 function compressVector(gl,c,fourVec,oldRenderModel){
-  var v = contigSubArray(contract(compressionTensor,fourVec,2,0),[c]).data
+  var v = contract(c,fourVec.vector,1,0).data
   if(v == [0,0,0]){
-    return {render: bufferStandard(gl,{positions: [0,0,0], colors: [1,1,0,1], indices: [0]},gl.POINTS), located: [0,0,0]}
+    return {render: bufferStandard(gl,{positions: [0,0,0], colors: fourVec.color, indices: [0]},gl.POINTS), located: [0,0,0]}
   }
   if(!oldRenderModel || !oldRenderModel.oriented){
-    oldRenderModel = {render: bufferStandard(gl,buildVector([0,0,0],[0,0,1],[1,1,0,1]),gl.LINES), located: [0,0,0]}
+    oldRenderModel = {render: bufferStandard(gl,buildVector([0,0,0],[0,0,1],fourVec.color),gl.LINES), located: [0,0,0]}
   }
   oldRenderModel.oriented = quat.create()
   oldRenderModel.scaled = vec3.length(v)
