@@ -21,6 +21,17 @@ const compressionTensor = {shape: [4,3,4], data:
   ,0,0,1,0, 0,0,0,1, 1,0,0,0
   ,0,0,0,1, 1,0,0,0, 0,1,0,0]
 }
+/*
+function compressionTensorAtWobble(lambda){
+  return [
+    Math.cos(lambda),Math.sin(lambda),0,0, -Math.sin(lambda),Math.cos(lambda),0,0, 0,0,1,0,
+    0,1,0,0, 0,0,1,0, 0,0,0,1,
+    0,0,1,0, 0,0,0,1, 1,0,0,0,
+    0,0,0,1, 1,0,0,0, 0,1,0,0
+  ]
+}
+*/
+
 const compressionMatrix = [
    [[1,0,0,0],[0,1,0,0],[0,0,1,0]]
   ,[[0,1,0,0],[0,0,1,0],[0,0,0,1]]
@@ -102,7 +113,7 @@ function main(){
     varying highp vec4 vColor;
     void main(void) {
       gl_Position = uProjectionMatrix * uModelViewMatrix * aVertexPosition;
-      gl_PointSize = 10.0;
+      gl_PointSize = 5.0;
       vColor = aVertexColor;
     }
   `;
@@ -134,8 +145,14 @@ function main(){
   gameState.objects["kartoffelSymbols"] = {compress: compressKartoffel}
 
   gameState.objects["vectorSpread"] = {compress: compressTensor}
+  gameState.objects["vectorSpread"].dirty = true
 
-  gameState.viewports.forEach(vp => {vp.objects["basis"] = {located: [0,0,0], render: bufferBasis(gl), dirty: true}})
+  gameState.objects["basis"] = {compress: compressTensor}
+  gameState.objects["basis"].dirty = true
+
+  gameState.objects["faraday"] = {compress: compressTensor}
+
+  gameState.objects["origincharge"] = {compress: compressTensor}
 
   // Draw the scene repeatedly
   function render(now) {
@@ -177,6 +194,9 @@ function main(){
 
     // Meanwhile, we are just going in a circle at a constant angular speed
     gameState.nowEvent[3] = 0.2 * lambda
+    if(gameState.nowEvent[3] > Math.PI){
+      gameState.nowEvent[3] -= 2 * Math.PI
+    }
     var dphi = 0.2
 
     var radius = gameState.nowEvent[1]
@@ -185,15 +205,38 @@ function main(){
     // In the object's rest frame at an event, we should have norm of this is g_{tt} v^t v^t = mass
     gameState.objects["fourvelocity"].data = {color: [1,1,0,1], vector: {shape: [4], data: [Math.sqrt(1 - dr * dr * tensorGet(theMetric,[1,1]) - dtheta * dtheta * tensorGet(theMetric,[2,2]) - dphi * dphi * tensorGet(theMetric,[3,3])),dr,dtheta,dphi]}}
     gameState.objects["fourvelocity"].dirty = true
+    gameState.objects["fourvelocity"].hidden = true
 
     gameState.objects["lightCone"].data = theMetric
     gameState.objects["lightCone"].dirty = true
+    gameState.objects["lightCone"].hidden = true
 
     gameState.objects["kartoffelSymbols"].data = polarCurvature(radius)
     gameState.objects["kartoffelSymbols"].dirty = true
+    gameState.objects["kartoffelSymbols"].hidden = true
 
-    gameState.objects["vectorSpread"].data = {treeIndexCount: 0, tensor: {shape: [4,4], data: [0,1,0,0, 0,0,1,0, 0,0,0,1, 1,0,0,0]}}
-    gameState.objects["vectorSpread"].dirty = true
+    const theData = [
+      1,1,1,1, 0,0,0,0, 0,2,1,0, 0,0,2,0,
+      1,1,1,1, 0,0,2,0, 0,5,0,0, 1,0,3,0,
+      1,1,1,1, 0,1,0,0, 0,0,0,1, 0,0,2,0,
+      1,1,1,1, 0,0,1,0, 0,0,1,0, 0,2,0,0
+    ].map(x => 0.1 * x)
+
+    gameState.objects["vectorSpread"].data = {compressValue: (gl,c,t,o) => {return compressVector(gl,c,{vector: t, color: [0,0.3,0.6,1]},o)}, valueRank: 1, tensor: {shape: [4,4,4], data: theData}}
+
+    gameState.objects["basis"].data = {compressValue: (gl,c,t,o) => {return compressBasis(gl,c,{basis: t, alpha: 1},o)}, valueRank: 2, tensor: {shape: [4,4], data: [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]}}
+
+    // This is \frac{Q}{4\pi\epsilon_0}, which is the field strenght at one meter
+    const stren = 1/16
+    gameState.objects["faraday"].data = {compressValue: (gl,c,t,o) => {return compressPoint(gl,c,t,o)}, valueRank: 0, tensor: {shape: [4,4], data: [0,stren/(radius * radius),0,0, stren/(radius * radius),0,0,0, 0,0,0,0, 0,0,0,0]}}
+    gameState.objects["faraday"].dirty = true
+
+    const deltaToOrigin = gameState.nowEvent.map(x => -x)
+
+    gameState.objects["origincharge"].data = {compressValue: (gl,c,t,o) => {return compressSphere(gl,c,{loc: t, radius: 1},o)}, valueRank: 1, tensor: {shape: [4], data: new Float32Array(deltaToOrigin)}}
+    gameState.objects["origincharge"].dirty = true
+
+    //compressionTensor.data = compressionTensorAtWobble(10 * Math.cos(15 * lambda))
 
     // Text canvas stuff
     const textCanvas = document.getElementById("textCanvas")
@@ -216,7 +259,9 @@ function main(){
         if(!gameState.objects[k].hidden){
           gameState.viewports[j].objects[k] = gameState.objects[k].compress(gl,contigSubArray(compressionTensor,[j]),gameState.objects[k].data,gameState.viewports[j].objects[k])
         }
-        gameState.viewports[j].objects[k].hidden = gameState.objects[k].hidden
+        if(gameState.viewports[j].objects[k]){
+          gameState.viewports[j].objects[k].hidden = gameState.objects[k].hidden
+        }
       }
       txtctx.textBaseline = "top"
       txtctx.fillStyle = "black"
@@ -548,6 +593,15 @@ function bufferStandard(gl,o,ds,cnt = o.indices.length){
   };
 }
 
+function compressSphere(gl,c,sphereData,oldRenderModel){
+  var r = contract(c,sphereData.loc,1,0).data
+  if(!oldRenderModel){
+    oldRenderModel = {render: bufferSphere(gl,r,sphereData.radius,8,8,(theta,phi) => [1,0,0.5 * Math.cos(theta) + 0.5,1]), located: r}
+  }
+  oldRenderModel.located = r
+  return oldRenderModel
+}
+
 function bufferSphere(gl,center,radius,segstheta,segsphi,fc) {
   return bufferStandard(gl,approxSphere(center,radius,segstheta,segsphi,fc),gl.TRIANGLES)
 }
@@ -726,33 +780,26 @@ function contigSubArray(t, prefix){
 //
 // Input tensor should have shape [-4,-4,-4,x...] where the -4's are spacetime covariant indexes, and the x... is further compressable by a provided function
 // tensor = {compressValue: (gl,c,value,oldRenderModel) => { ... }, indexCount: q, valueShape: [x...], shape: [...], data: [...]}
+//
+// tensorData = {tensor: {...}, valueRank: 1, compressValue: (gl,c,t,o) => {...}}
 function compressTensor(gl,c,tensorData,oldRenderModel){
   var theTensor = tensorData.tensor
-  for(var i = 0; i < tensorData.treeIndexCount; i++){
+  const treeIndexCount = theTensor.shape.length - tensorData.valueRank
+  for(var i = 0; i < treeIndexCount; i++){
     theTensor = contract(c,theTensor,1,i)
   }
-  const numParts = shapeSize(theTensor.shape.slice(0,tensorData.treeIndexCount))
+  const numParts = shapeSize(theTensor.shape.slice(0,treeIndexCount))
   if(!oldRenderModel){
     oldRenderModel = []
     oldRenderModel.length = numParts
   }
-  const valueSize = shapeSize(theTensor.shape.slice(tensorData.treeIndexCount))
-  const valueRank = theTensor.shape.length - tensorData.treeIndexCount
-  const buildIt = (t,o) => {
-    if(valueRank == 1){
-      return compressVector(gl,c,{vector: t, color: [0,0.3,0.6,1]},o)
-    }
-    if(valueRank == 2){
-      return compressBasis(gl,c,t,o)
-    }
-  }
+  const valueSize = shapeSize(theTensor.shape.slice(treeIndexCount))
   for(var ptNum = 0; ptNum < numParts; ptNum++){
-    const spot = shapedUnIndex(theTensor.shape.slice(0,tensorData.treeIndexCount),ptNum)
-    oldRenderModel[ptNum] = buildIt(contigSubArray(theTensor,spot), oldRenderModel[ptNum])
-    var offset = [0,0,0]
-    //console.log(spot)
-    spot.forEach(x => {
-      offset[x] = offset[x] + differentialOffset
+    const spot = shapedUnIndex(theTensor.shape.slice(0,treeIndexCount),ptNum)
+    oldRenderModel[ptNum] = tensorData.compressValue(gl,c,contigSubArray(theTensor,spot), oldRenderModel[ptNum])
+    var offset = oldRenderModel[ptNum].located
+    spot.forEach((x,i) => {
+      offset[x] = offset[x] + differentialOffset ** (i + 1)
     })
     oldRenderModel[ptNum].located = offset
   }
@@ -787,11 +834,13 @@ function compressKartoffel(gl,c,kartoffelSymbols,oldRenderModel){
   return oldRenderModel
 }
 
-function compressBasis(gl,c,basis,oldRenderModel){
+function compressBasis(gl,c,data,oldRenderModel){
   if(!oldRenderModel){
-    oldRenderModel = {render: bufferBasis(gl,identityMatrix,0.5)}
+    oldRenderModel = {render: bufferBasis(gl,identityMatrix,data.alpha)}
   }
-  var reducedBasis = contract(c,contract(c,basis,1,0),1,1)
+  var reducedBasis = contract(c,contract(c,data.basis,1,0),1,1)
+  console.log(JSON.stringify(contract(c,data.basis,1,0)))
+  console.log(JSON.stringify(reducedBasis))
   oldRenderModel.arbitrary = nestTensor(reducedBasis)
   return oldRenderModel
 }
@@ -852,9 +901,20 @@ function compressMetric(gl,c,metric,oldRenderModel){
   }
 }
 
+function compressPoint(gl,c,ptVal,oldRenderModel){
+  var col = ptVal.data[0]
+  if(!oldRenderModel){
+    return {render: bufferStandard(gl,{positions: [0,0,0], colors: [col,col,col,1], indices: [0]},gl.POINTS), located: [0,0,0]}
+  }
+  gl.bindBuffer(gl.ARRAY_BUFFER, oldRenderModel.render.color);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([col,col,col,1]), gl.STATIC_DRAW)
+  oldRenderModel.located = [0,0,0]
+  return oldRenderModel
+}
+
 function compressVector(gl,c,fourVec,oldRenderModel){
   var v = contract(c,fourVec.vector,1,0).data
-  if(v == [0,0,0]){
+  if(v.every(x => x == 0)){
     return {render: bufferStandard(gl,{positions: [0,0,0], colors: fourVec.color, indices: [0]},gl.POINTS), located: [0,0,0]}
   }
   if(!oldRenderModel || !oldRenderModel.oriented){
